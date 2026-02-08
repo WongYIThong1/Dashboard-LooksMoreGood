@@ -18,7 +18,7 @@ export async function GET() {
     // 从 user_profiles 表获取用户信息
     const { data: profile, error: profileError } = await supabase
       .from('user_profiles')
-      .select('username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash')
+      .select('username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash, max_tasks')
       .eq('id', user.id)
       .single()
 
@@ -46,6 +46,7 @@ export async function GET() {
       privacy: profile.privacy_mode,
       avatarUrl: profile.avatar_url,
       avatarHash: profile.avatar_hash,
+      max_tasks: profile.max_tasks || 0,
     })
   } catch (error) {
     console.error('Settings API error:', error)

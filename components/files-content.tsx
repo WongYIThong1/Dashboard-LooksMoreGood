@@ -253,6 +253,19 @@ export function FilesContent() {
     if (!fileToDelete) return
 
     setIsDeleting(fileToDelete)
+    
+    // 乐观更新：立即从 UI 移除文件
+    const fileToRemove = filesData.find(f => f.name === fileToDelete)
+    if (fileToRemove) {
+      setFilesData(prev => prev.filter(f => f.name !== fileToDelete))
+      setStorageUsed(prev => Math.max(0, prev - fileToRemove.sizeBytes))
+    }
+    
+    // 立即关闭对话框和清除选择
+    setShowDeleteDialog(false)
+    setFileToDelete(null)
+    toast.success('File deleted successfully')
+
     try {
       const response = await fetch(`/api/files?name=${encodeURIComponent(fileToDelete)}`, {
         method: 'DELETE',
@@ -264,13 +277,13 @@ export function FilesContent() {
         throw new Error(data.error || 'Failed to delete file')
       }
 
-      toast.success('File deleted successfully')
-      setShowDeleteDialog(false)
-      setFileToDelete(null)
+      // 后台刷新确保数据一致
       fetchFiles()
     } catch (error) {
       console.error('Delete error:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete file')
+      // 如果失败，重新加载数据
+      fetchFiles()
     } finally {
       setIsDeleting(null)
     }
@@ -283,6 +296,18 @@ export function FilesContent() {
     setIsBatchDeleting(true)
     const fileNames = selectedRows.map(row => row.getValue("name") as string)
     
+    // 乐观更新：立即从 UI 移除所有选中的文件
+    const filesToRemove = filesData.filter(f => fileNames.includes(f.name))
+    const totalSize = filesToRemove.reduce((sum, f) => sum + f.sizeBytes, 0)
+    
+    setFilesData(prev => prev.filter(f => !fileNames.includes(f.name)))
+    setStorageUsed(prev => Math.max(0, prev - totalSize))
+    setRowSelection({})
+    
+    // 立即关闭对话框
+    setShowBatchDeleteDialog(false)
+    toast.success(`Deleting ${fileNames.length} file${fileNames.length > 1 ? 's' : ''}...`)
+
     try {
       const response = await fetch('/api/files/batch-delete', {
         method: 'DELETE',
@@ -306,12 +331,13 @@ export function FilesContent() {
         toast.success(`Successfully deleted ${success} file${success > 1 ? 's' : ''}`)
       }
       
-      setShowBatchDeleteDialog(false)
-      setRowSelection({})
+      // 后台刷新确保数据一致
       fetchFiles()
     } catch (error) {
       console.error('Batch delete error:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete files')
+      // 如果失败，重新加载数据
+      fetchFiles()
     } finally {
       setIsBatchDeleting(false)
     }
@@ -694,6 +720,14 @@ function getFileType(mimeType: string): string {
     setIsUploading(true)
     setUploadProgress(0)
 
+    // 模拟真实的上传进度
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => {
+        if (prev >= 90) return prev // 在 90% 停止，等待真实完成
+        return prev + Math.random() * 15 // 随机增加 0-15%
+      })
+    }, 300)
+
     try {
       const formData = new FormData()
       formData.append('file', selectedFile)
@@ -705,14 +739,12 @@ function getFileType(mimeType: string): string {
         type: fileType,
       })
 
-      setUploadProgress(20)
-
       const response = await fetch('/api/files/upload', {
         method: 'POST',
         body: formData,
       })
 
-      setUploadProgress(60)
+      clearInterval(progressInterval)
 
       if (!response.ok) {
         const data = await response.json()
@@ -725,14 +757,20 @@ function getFileType(mimeType: string): string {
 
       setUploadProgress(100)
       toast.success(`Uploaded successfully (${data.lines} lines)`)
-      setSelectedFile(null)
-      setShowUploadDialog(false)
-      fetchFiles()
+      
+      // 延迟关闭对话框，让用户看到 100%
+      setTimeout(() => {
+        setSelectedFile(null)
+        setShowUploadDialog(false)
+        fetchFiles()
+      }, 500)
     } catch (error) {
+      clearInterval(progressInterval)
       console.error('Upload error:', error)
       const errorMessage = error instanceof Error ? error.message : "Failed to upload file"
       toast.error(errorMessage)
     } finally {
+      clearInterval(progressInterval)
       setIsUploading(false)
       setUploadProgress(0)
     }
@@ -1090,7 +1128,7 @@ function getFileType(mimeType: string): string {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">Uploading</span>
-                      <span className="font-medium">{uploadProgress}%</span>
+                      <span className="font-medium">{Math.round(uploadProgress)}%</span>
                     </div>
                     <Progress value={uploadProgress} className="h-2" />
                   </div>

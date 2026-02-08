@@ -30,6 +30,11 @@ import {
   IconBrain,
   IconEye,
   IconBook,
+  IconCpu,
+  IconGitMerge,
+  IconToggleLeft,
+  IconShieldCheck,
+  IconCoins,
 } from "@tabler/icons-react"
 import {
   flexRender,
@@ -42,6 +47,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -107,7 +113,6 @@ interface TaskSettings {
   file: string
   ai_mode: boolean
   auto_dumper: boolean
-  web_crawler: "FullScan" | "Balance" | "Fast"
   preset: string | null
   union_based: boolean
   error_based: boolean
@@ -150,175 +155,125 @@ function mapUrlStatus(apiStatus: string): "complete" | "dumping" | "failed" | "q
 
 const isDev = process.env.NODE_ENV !== "production"
 
+// Format credits number to k/M format
+function formatCredits(num: number): string {
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M'
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  }
+  return num.toString()
+}
+
 const statusConfig = {
-  complete: { icon: IconCircleCheck, label: "Complete", color: "text-emerald-500", iconClass: "" },
-  dumping: { icon: IconLoader2, label: "Dumping", color: "text-blue-500", iconClass: "animate-spin" },
-  failed: { icon: IconAlertTriangle, label: "Failed", color: "text-red-500", iconClass: "" },
-  queue: { icon: IconClock, label: "Queue", color: "text-yellow-500", iconClass: "" },
+  complete: { 
+    icon: IconCircleCheck, 
+    label: "Complete", 
+    className: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    iconClass: "text-emerald-600 dark:text-emerald-400"
+  },
+  dumping: { 
+    icon: IconLoader2, 
+    label: "Dumping", 
+    className: "border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    iconClass: "text-blue-600 dark:text-blue-400 animate-spin"
+  },
+  failed: { 
+    icon: IconAlertTriangle, 
+    label: "Failed", 
+    className: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-400",
+    iconClass: "text-red-600 dark:text-red-400"
+  },
+  queue: { 
+    icon: IconClock, 
+    label: "Queue", 
+    className: "border-yellow-500/50 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
+    iconClass: "text-yellow-600 dark:text-yellow-400"
+  },
 }
 
 const columns: ColumnDef<TableRowData>[] = [
   {
+    accessorKey: "id",
+    header: "ID",
+    cell: ({ row }) => {
+      const id = row.getValue("id") as string
+      const shortId = id.split("-")[0]
+      return (
+        <span className="font-[family-name:var(--font-jetbrains-mono)] text-xs text-muted-foreground">{shortId}</span>
+      )
+    },
+  },
+  {
     accessorKey: "country",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Country
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: "Country",
     cell: ({ row }) => {
       const country = row.getValue("country") as string
       return (
-        <span className="font-medium font-[family-name:var(--font-inter)]">{country || "-"}</span>
+        <span className="font-medium">{country || "Unknown"}</span>
       )
     },
   },
   {
     accessorKey: "domain",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Domain
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: "Domain",
     cell: ({ row }) => {
       const domain = row.getValue("domain") as string
       return (
-        <span className="text-muted-foreground font-[family-name:var(--font-inter)]">{domain || "-"}</span>
+        <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)] text-sm">{domain || "-"}</span>
       )
     },
   },
   {
     accessorKey: "type",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Type
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: "Type",
     cell: ({ row }) => {
       const type = row.getValue("type") as string
       return type !== "-" ? (
-        <Badge variant="outline" className="font-[family-name:var(--font-inter)]">{type}</Badge>
+        <Badge variant="secondary" className="font-[family-name:var(--font-jetbrains-mono)] text-xs">
+          {type}
+        </Badge>
       ) : (
-        <span className="text-muted-foreground">-</span>
+        <span className="text-muted-foreground text-sm">-</span>
       )
     },
   },
   {
     accessorKey: "database",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Database
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: "Database",
     cell: ({ row }) => {
       const database = row.getValue("database") as string
       return (
-        <span className="text-muted-foreground font-[family-name:var(--font-inter)]">{database || "-"}</span>
+        <span className="text-foreground font-medium font-[family-name:var(--font-jetbrains-mono)] text-sm">{database || "-"}</span>
       )
     },
   },
   {
     accessorKey: "rows",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Rows
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: () => <div className="text-right">Rows</div>,
     cell: ({ row }) => {
       const rows = row.getValue("rows") as number
       return (
-        <span className="font-medium font-[family-name:var(--font-jetbrains-mono)]">
-          {rows > 0 ? rows.toLocaleString() : "-"}
-        </span>
+        <div className="text-right">
+          <span className="font-semibold font-[family-name:var(--font-jetbrains-mono)] text-sm">
+            {rows > 0 ? rows.toLocaleString() : "-"}
+          </span>
+        </div>
       )
     },
   },
   {
     accessorKey: "status",
-    header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
-        onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      >
-        Status
-        {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
-        ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
-        ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
-        )}
-      </Button>
-    ),
+    header: "Status",
     cell: ({ row }) => {
       const status = row.getValue("status") as keyof typeof statusConfig
       const config = statusConfig[status]
       const StatusIcon = config.icon
       return (
-        <Badge variant="outline" className="bg-transparent border-border font-[family-name:var(--font-inter)]">
-          <StatusIcon size={12} className={`${config.color} ${config.iconClass}`} />
-          <span className="text-foreground">{config.label}</span>
+        <Badge variant="outline" className={`gap-1.5 ${config.className}`}>
+          <StatusIcon size={12} className={config.iconClass} />
+          <span className="font-medium">{config.label}</span>
         </Badge>
       )
     },
@@ -328,13 +283,13 @@ const columns: ColumnDef<TableRowData>[] = [
     cell: ({ row }) => (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-7">
-            <IconDotsVertical size={14} />
+          <Button variant="ghost" size="icon" className="size-8">
+            <IconDotsVertical size={16} />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <a href={`/tasks/1/${row.original.id}`}>View</a>
+            <a href={`/tasks/1/${row.original.id}`}>View details</a>
           </DropdownMenuItem>
           <DropdownMenuItem>Download</DropdownMenuItem>
           <DropdownMenuItem>Retry</DropdownMenuItem>
@@ -355,6 +310,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [taskNotFound, setTaskNotFound] = React.useState(false)
   const [taskStatus, setTaskStatus] = React.useState<"pending" | "running_recon" | "running" | "paused" | "complete" | "failed">("pending")
   const [progress, setProgress] = React.useState({ target: 0, current: 0 })
+  const [creditsUsed, setCreditsUsed] = React.useState(10000)
   const [fileId, setFileId] = React.useState<string>("")
   const [storagePath, setStoragePath] = React.useState<string>("")
   
@@ -374,7 +330,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [isDeleting, setIsDeleting] = React.useState(false)
   const [taskName, setTaskName] = React.useState("")
   const [listsFile, setListsFile] = React.useState("")
-  const [webCrawler, setWebCrawler] = React.useState<"FullScan" | "Balance" | "Fast">("Balance")
   const [aiMode, setAiMode] = React.useState(true)
   const [autoDumper, setAutoDumper] = React.useState(false)
   const [preset, setPreset] = React.useState("")
@@ -394,7 +349,80 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const hasFetched = React.useRef(false)
   
   // Data storage
-  const [tableData, setTableData] = React.useState<TableRowData[]>([])
+  const [tableData, setTableData] = React.useState<TableRowData[]>([
+    {
+      id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      country: "US",
+      domain: "example.com",
+      type: "MySQL",
+      database: "users_db",
+      rows: 15420,
+      status: "complete"
+    },
+    {
+      id: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      country: "UK",
+      domain: "test-site.co.uk",
+      type: "PostgreSQL",
+      database: "accounts",
+      rows: 8932,
+      status: "dumping"
+    },
+    {
+      id: "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      country: "DE",
+      domain: "shop-online.de",
+      type: "MongoDB",
+      database: "products",
+      rows: 0,
+      status: "failed"
+    },
+    {
+      id: "d4e5f6a7-b8c9-0123-def1-234567890123",
+      country: "FR",
+      domain: "webapp.fr",
+      type: "MySQL",
+      database: "sessions",
+      rows: 0,
+      status: "queue"
+    },
+    {
+      id: "e5f6a7b8-c9d0-1234-ef12-345678901234",
+      country: "JP",
+      domain: "portal.jp",
+      type: "MariaDB",
+      database: "logs",
+      rows: 45678,
+      status: "complete"
+    },
+    {
+      id: "f6a7b8c9-d0e1-2345-f123-456789012345",
+      country: "CA",
+      domain: "api.example.ca",
+      type: "MySQL",
+      database: "customers",
+      rows: 23456,
+      status: "dumping"
+    },
+    {
+      id: "a7b8c9d0-e1f2-3456-1234-567890123456",
+      country: "AU",
+      domain: "store.com.au",
+      type: "PostgreSQL",
+      database: "orders",
+      rows: 12890,
+      status: "complete"
+    },
+    {
+      id: "b8c9d0e1-f2a3-4567-2345-678901234567",
+      country: "BR",
+      domain: "site.com.br",
+      type: "MySQL",
+      database: "payments",
+      rows: 0,
+      status: "queue"
+    },
+  ])
   
   // Derived state for pagination
   const totalItems = tableData.length
@@ -475,10 +503,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setListsFile(task.file_name || '')
       setTaskStatus(task.status || 'pending')
       setProgress(prev => ({ ...prev, target: task.target || 0 }))
+      setCreditsUsed(task.credits_used || 10000)
       setFileId(task.file_id || '')
       
       // 更新任务设置
-      setWebCrawler(task.web_crawler || 'Balance')
       setAiMode(task.ai_mode ?? true)
       setAutoDumper(task.auto_dumper ?? false)
       setPreset(task.preset || '')
@@ -543,7 +571,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       // 更新所有设置状态
       setTaskName(task.name || '')
       setListsFile(task.file_name || '')
-      setWebCrawler(task.web_crawler || 'Balance')
       setAiMode(task.ai_mode ?? true)
       setAutoDumper(task.auto_dumper ?? false)
       setPreset(task.preset || '')
@@ -567,79 +594,29 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const handleStart = async () => {
     setIsStarting(true)
     try {
-      // 首先获取文件的签名 URL
-      if (!fileId) {
-        toast.error('File information not available')
-        return
-      }
-
-      const signedUrlResponse = await fetch(`/api/v1/files/${fileId}/signed-url`, {
-        method: 'GET',
-        credentials: 'include',
-      })
-
-      const signedUrlData = await signedUrlResponse.json()
-
-      if (!signedUrlResponse.ok || !signedUrlData.success) {
-        toast.error('Failed to generate download URL')
-        return
-      }
-
-      const downloadUrl = signedUrlData.data.signed_url
-
-      // 调用 start 接口，传递 downloadurl
-      const response = await fetch(`/api/v1/start/${id}`, {
+      // Call the new unified start endpoint
+      const response = await fetch(`/api/v1/tasks/${id}/start`, {
         method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          downloadurl: downloadUrl,
-        }),
       })
 
       const data = await response.json()
 
-      if (!response.ok) {
-        // 处理错误响应
-        const errorCode = data.error
-        let errorMessage = 'Please Try Again'
-        
-        switch (errorCode) {
-          case 'user_not_authenticated':
-            errorMessage = 'User Not Authenticated'
-            break
-          case 'task_id_is_required':
-            errorMessage = 'Task ID Close'
-            break
-          case 'task_not_found':
-            errorMessage = 'Task Not Found'
-            break
-          case 'task_not_owned_by_user':
-            errorMessage = 'Task Not Owned By User'
-            break
-          case 'downloadurl is required':
-            errorMessage = 'Download URL is required'
-            break
-          case 'downloadurl must be a valid URL':
-            errorMessage = 'Invalid download URL'
-            break
-          case 'Invalid JSON format':
-            errorMessage = 'Invalid request format'
-            break
-          default:
-            errorMessage = 'Please Try Again'
-        }
-        
-        toast.error(errorMessage)
+      if (!response.ok || !data.success) {
+        toast.error(data.error || 'Failed to start task')
         return
       }
 
       toast.success('Task Started Successfully')
       
-      // 更新任务状态
+      // Update task status
       setTaskStatus('running_recon')
+      
+      // Refresh task data to get updated information
+      await fetchTaskData(false)
     } catch (error) {
       console.error('Start task error:', error)
       toast.error('Please Try Again')
@@ -658,7 +635,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         },
         credentials: 'include',
         body: JSON.stringify({
-          web_crawler: webCrawler,
           auto_dumper: autoDumper,
           preset: preset || null,
           ai_mode: aiMode,
@@ -876,7 +852,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-muted/30">
+              <IconCoins size={13} className="text-amber-500" />
+              <span className="text-xs text-muted-foreground">Credits:</span>
+              <span className="text-sm font-semibold font-[family-name:var(--font-jetbrains-mono)]">{formatCredits(creditsUsed)}</span>
+            </div>
             <Button variant="outline" size="icon" className="size-7" onClick={handleStart} disabled={isStarting || taskStatus === "running" || taskStatus === "running_recon" || taskStatus === "complete" || taskStatus === "failed"}>
               {isStarting ? (
                 <IconLoader2 size={12} className="animate-spin" />
@@ -1103,54 +1084,54 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="web-crawler">WebCrawler Mode</Label>
-                  <div className="relative">
-                    <IconWorld className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground z-10" />
-                    <Select value={webCrawler} onValueChange={(v) => setWebCrawler(v as "FullScan" | "Balance" | "Fast")} disabled={isSaving}>
-                      <SelectTrigger className="w-full pl-10">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="FullScan">FullScan</SelectItem>
-                        <SelectItem value="Balance">Balance</SelectItem>
-                        <SelectItem value="Fast">Fast</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
                 {autoDumper && (
                   <div className="space-y-2">
-                    <Label htmlFor="preset">Preset</Label>
-                    <Input
-                      id="preset"
-                      placeholder="email:password"
-                      className="font-[family-name:var(--font-jetbrains-mono)]"
-                      value={preset}
-                      onChange={(e) => setPreset(e.target.value)}
-                      disabled={isSaving}
-                    />
+                    <Label htmlFor="preset" className="flex items-center gap-2">
+                      <IconDatabase className="size-3.5 text-muted-foreground" />
+                      Preset Format
+                    </Label>
+                    <Select value={preset} onValueChange={setPreset} disabled={isSaving}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select format" />
+                      </SelectTrigger>
+                      <SelectContent position="popper" sideOffset={4} className="max-h-[300px] overflow-y-auto">
+                        <SelectItem value="email:password">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">email:password</span>
+                        </SelectItem>
+                        <SelectItem value="username:password">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">username:password</span>
+                        </SelectItem>
+                        <SelectItem value="phone:password">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">phone:password</span>
+                        </SelectItem>
+                        <SelectItem value="email">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">email</span>
+                        </SelectItem>
+                        <SelectItem value="username">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">username</span>
+                        </SelectItem>
+                        <SelectItem value="phone">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">phone</span>
+                        </SelectItem>
+                        <SelectItem value="cc:cvv:exp">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">cc:cvv:exp</span>
+                        </SelectItem>
+                        <SelectItem value="name:cc:cvv:exp:address">
+                          <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">name:cc:cvv:exp:address</span>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Data extraction format</p>
                   </div>
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <div className="flex items-center gap-2">
-                    <IconSparkles className="size-4 text-purple-500" />
-                    <Label htmlFor="ai-mode" className="cursor-pointer text-sm">SQLBot Agent</Label>
-                  </div>
-                  <Switch id="ai-mode" checked={aiMode} onCheckedChange={setAiMode} disabled={true} />
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="flex items-center gap-2">
+                  <IconDatabase className="size-4 text-blue-500" />
+                  <Label htmlFor="auto-dumper" className="cursor-pointer text-sm">Auto Dumper</Label>
                 </div>
-
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <div className="flex items-center gap-2">
-                    <IconDatabase className="size-4 text-blue-500" />
-                    <Label htmlFor="auto-dumper" className="cursor-pointer text-sm">Auto Dumper</Label>
-                  </div>
-                  <Switch id="auto-dumper" checked={autoDumper} onCheckedChange={setAutoDumper} disabled={isSaving} />
-                </div>
+                <Switch id="auto-dumper" checked={autoDumper} onCheckedChange={setAutoDumper} disabled={isSaving} />
               </div>
             </div>
 
@@ -1159,14 +1140,15 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             {/* Injection Settings */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <h4 className="text-sm font-medium text-muted-foreground">Injection Settings</h4>
-                  <span className="text-xs text-muted-foreground">Recommended: Union & Error only</span>
-                </div>
+                <h4 className="text-sm font-medium flex items-center gap-2">
+                  <IconDatabase className="size-4 text-blue-500" />
+                  Injection Settings
+                </h4>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7 gap-1.5 text-xs"
+                  type="button"
                   onClick={() => window.open('https://docs.example.com', '_blank')}
                 >
                   <IconBook className="size-3.5" />
@@ -1174,25 +1156,57 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 </Button>
               </div>
               
-              <div className="grid grid-cols-4 gap-3">
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <Label htmlFor="union-based" className="cursor-pointer text-xs">Union</Label>
-                  <Switch id="union-based" checked={unionBased} onCheckedChange={setUnionBased} disabled={isSaving} />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center space-x-2">
+                  <Checkbox 
+                    id="union-based" 
+                    checked={unionBased} 
+                    onCheckedChange={setUnionBased} 
+                    disabled={isSaving}
+                  />
+                  <Label htmlFor="union-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
+                    <IconGitMerge className="size-4 text-muted-foreground" />
+                    Union-based
+                  </Label>
                 </div>
 
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <Label htmlFor="error-based" className="cursor-pointer text-xs">Error</Label>
-                  <Switch id="error-based" checked={errorBased} onCheckedChange={setErrorBased} disabled={isSaving} />
+                <div className="flex items-center space-x-2">
+                  <Checkbox 
+                    id="error-based" 
+                    checked={errorBased} 
+                    onCheckedChange={setErrorBased} 
+                    disabled={isSaving}
+                  />
+                  <Label htmlFor="error-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
+                    <IconAlertTriangle className="size-4 text-muted-foreground" />
+                    Error-based
+                  </Label>
                 </div>
 
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <Label htmlFor="boolean-based" className="cursor-pointer text-xs">Boolean</Label>
-                  <Switch id="boolean-based" checked={booleanBased} onCheckedChange={setBooleanBased} disabled={isSaving} />
+                <div className="flex items-center space-x-2">
+                  <Checkbox 
+                    id="boolean-based" 
+                    checked={booleanBased} 
+                    onCheckedChange={setBooleanBased} 
+                    disabled={isSaving}
+                  />
+                  <Label htmlFor="boolean-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
+                    <IconToggleLeft className="size-4 text-muted-foreground" />
+                    Boolean-based
+                  </Label>
                 </div>
 
-                <div className="flex items-center justify-between rounded-lg border p-3">
-                  <Label htmlFor="time-based" className="cursor-pointer text-xs">Time</Label>
-                  <Switch id="time-based" checked={timeBased} onCheckedChange={setTimeBased} disabled={isSaving} />
+                <div className="flex items-center space-x-2">
+                  <Checkbox 
+                    id="time-based" 
+                    checked={timeBased} 
+                    onCheckedChange={setTimeBased} 
+                    disabled={isSaving}
+                  />
+                  <Label htmlFor="time-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
+                    <IconClock className="size-4 text-muted-foreground" />
+                    Time-based
+                  </Label>
                 </div>
               </div>
             </div>
@@ -1204,14 +1218,15 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 {/* AI Settings */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-                      <IconSparkles className="size-4 text-purple-500" />
-                      SQLbot Agent Settings
+                    <h4 className="text-sm font-medium flex items-center gap-2">
+                      <IconBrain className="size-4 text-purple-500" />
+                      SQLBot AI Settings
                     </h4>
                     <Button
                       variant="ghost"
                       size="sm"
                       className="h-7 gap-1.5 text-xs"
+                      type="button"
                       onClick={() => window.open('https://docs.example.com', '_blank')}
                     >
                       <IconBook className="size-3.5" />
@@ -1258,7 +1273,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <div className="grid grid-cols-3 gap-3">
                     <div className="flex items-center justify-between rounded-lg border p-3">
                       <Label htmlFor="response-drift" className="cursor-pointer text-xs flex items-center gap-1.5">
-                        <IconBrain className="size-3 text-muted-foreground" />
+                        <IconCpu className="size-4 text-muted-foreground" />
                         Strategy Engine
                       </Label>
                       <Switch id="response-drift" checked={responsePatternDrift} onCheckedChange={setResponsePatternDrift} disabled={isSaving} />
@@ -1266,7 +1281,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
                     <div className="flex items-center justify-between rounded-lg border p-3">
                       <Label htmlFor="baseline-profiling" className="cursor-pointer text-xs flex items-center gap-1.5">
-                        <IconShield className="size-3 text-muted-foreground" />
+                        <IconShield className="size-4 text-muted-foreground" />
                         Risk Filter Engine
                       </Label>
                       <Switch id="baseline-profiling" checked={baselineProfiling} onCheckedChange={setBaselineProfiling} disabled={isSaving} />
@@ -1274,8 +1289,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
                     <div className="flex items-center justify-between rounded-lg border p-3">
                       <Label htmlFor="structural-change" className="cursor-pointer text-xs flex items-center gap-1.5">
-                        <IconEye className="size-3 text-muted-foreground" />
-                        Detection Agent
+                        <IconShieldCheck className="size-4 text-muted-foreground" />
+                        Evasion Engine
                       </Label>
                       <Switch id="structural-change" checked={structuralChangeDetection} onCheckedChange={setStructuralChangeDetection} disabled={isSaving} />
                     </div>
