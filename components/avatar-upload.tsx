@@ -85,8 +85,8 @@ export function AvatarUpload({
 
       const data = await response.json()
       
-      // 5. 缓存头像
-      setCachedAvatar(userId, thumbnail, data.avatarUrl, hash)
+      // 5. 加密缓存头像
+      await setCachedAvatar(userId, thumbnail, data.avatarUrl, hash)
       
       // 6. 通知父组件
       onUploadSuccess(data.avatarUrl, hash)

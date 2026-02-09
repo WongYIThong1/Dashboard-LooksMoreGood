@@ -73,8 +73,9 @@ export async function POST(request: Request) {
     const { error: uploadError } = await supabase.storage
       .from('avatars')
       .upload(filePath, file, {
-        cacheControl: '31536000', // 1年缓存
+        cacheControl: 'public, max-age=31536000', // 1年缓存，但允许通过版本参数更新
         upsert: false,
+        contentType: file.type,
       })
 
     if (uploadError) {
@@ -97,11 +98,14 @@ export async function POST(request: Request) {
       )
     }
 
+    // 确保 URL 是完整的公开 URL
+    const publicUrl = urlData.publicUrl
+
     // 更新数据库
     const { error: updateError } = await supabase
       .from('user_profiles')
       .update({
-        avatar_url: urlData.publicUrl,
+        avatar_url: publicUrl,
         avatar_hash: hash,
         avatar_updated_at: new Date().toISOString(),
       })
@@ -117,7 +121,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      avatarUrl: urlData.publicUrl,
+      avatarUrl: publicUrl,
       hash,
     })
   } catch (error) {

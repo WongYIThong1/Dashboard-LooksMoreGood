@@ -18,7 +18,7 @@ export async function GET() {
     // 从 user_profiles 表获取用户信息
     const { data: profile, error: profileError } = await supabase
       .from('user_profiles')
-      .select('username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash, max_tasks')
+      .select('username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash, max_tasks, subscription_days, subscription_expires_at')
       .eq('id', user.id)
       .single()
 
@@ -37,6 +37,17 @@ export async function GET() {
       )
     }
 
+    // 计算剩余天数
+    let daysRemaining = null
+    let isExpired = false
+    if (profile.subscription_expires_at) {
+      const expiresAt = new Date(profile.subscription_expires_at)
+      const now = new Date()
+      const diffTime = expiresAt.getTime() - now.getTime()
+      daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+      isExpired = daysRemaining <= 0
+    }
+
     return NextResponse.json({
       username: profile.username || 'User',
       email: profile.email || user.email || 'user@example.com',
@@ -47,6 +58,10 @@ export async function GET() {
       avatarUrl: profile.avatar_url,
       avatarHash: profile.avatar_hash,
       max_tasks: profile.max_tasks || 0,
+      subscription_days: profile.subscription_days || 0,
+      subscription_expires_at: profile.subscription_expires_at,
+      days_remaining: daysRemaining,
+      is_expired: isExpired,
     })
   } catch (error) {
     console.error('Settings API error:', error)

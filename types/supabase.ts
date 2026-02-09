@@ -14,92 +14,132 @@ export type Database = {
   }
   public: {
     Tables: {
-      files: {
+      user_files: {
         Row: {
           created_at: string
+          file_path: string
+          file_size: number
+          file_type: string
+          filename: string
           id: string
-          lines: number
-          name: string
-          size: number
-          storage_path: string
-          type: string
+          line_count: number | null
+          mime_type: string
           updated_at: string
           user_id: string
         }
         Insert: {
           created_at?: string
+          file_path: string
+          file_size: number
+          file_type: string
+          filename: string
           id?: string
-          lines?: number
-          name: string
-          size?: number
-          storage_path: string
-          type?: string
+          line_count?: number | null
+          mime_type: string
           updated_at?: string
           user_id: string
         }
         Update: {
           created_at?: string
+          file_path?: string
+          file_size?: number
+          file_type?: string
+          filename?: string
           id?: string
-          lines?: number
-          name?: string
-          size?: number
-          storage_path?: string
-          type?: string
+          line_count?: number | null
+          mime_type?: string
           updated_at?: string
           user_id?: string
         }
-        Relationships: [
-          {
-            foreignKeyName: "files_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
-      profiles: {
+      rate_limits: {
         Row: {
+          action: string
+          attempt_count: number
           created_at: string
-          credits: number
-          email: string
           id: string
-          plan: string
-          privacy_mode: boolean
-          storage_total: number
-          storage_used: number
-          system_notification: boolean
-          tasks: number
-          updated_at: string
-          username: string
+          identifier: string
+          last_attempt: string
+          window_start: string
         }
         Insert: {
+          action: string
+          attempt_count?: number
           created_at?: string
-          credits?: number
-          email: string
-          id: string
-          plan?: string
-          privacy_mode?: boolean
-          storage_total?: number
-          storage_used?: number
-          system_notification?: boolean
-          tasks?: number
-          updated_at?: string
-          username: string
+          id?: string
+          identifier: string
+          last_attempt?: string
+          window_start?: string
         }
         Update: {
+          action?: string
+          attempt_count?: number
+          created_at?: string
+          id?: string
+          identifier?: string
+          last_attempt?: string
+          window_start?: string
+        }
+        Relationships: []
+      }
+      user_profiles: {
+        Row: {
+          avatar_hash: string | null
+          avatar_updated_at: string | null
+          avatar_url: string | null
+          created_at: string
+          credits: number
+          email: string | null
+          id: string
+          max_tasks: number
+          plan: string
+          privacy_mode: boolean
+          storage_limit: number
+          storage_used: number
+          subscription_days: number | null
+          subscription_expires_at: string | null
+          system_notification: boolean
+          updated_at: string
+          username: string | null
+        }
+        Insert: {
+          avatar_hash?: string | null
+          avatar_updated_at?: string | null
+          avatar_url?: string | null
           created_at?: string
           credits?: number
-          email?: string
-          id?: string
+          email?: string | null
+          id: string
+          max_tasks?: number
           plan?: string
           privacy_mode?: boolean
-          storage_total?: number
+          storage_limit?: number
           storage_used?: number
+          subscription_days?: number | null
+          subscription_expires_at?: string | null
           system_notification?: boolean
-          tasks?: number
           updated_at?: string
-          username?: string
+          username?: string | null
+        }
+        Update: {
+          avatar_hash?: string | null
+          avatar_updated_at?: string | null
+          avatar_url?: string | null
+          created_at?: string
+          credits?: number
+          email?: string | null
+          id?: string
+          max_tasks?: number
+          plan?: string
+          privacy_mode?: boolean
+          storage_limit?: number
+          storage_used?: number
+          subscription_days?: number | null
+          subscription_expires_at?: string | null
+          system_notification?: boolean
+          updated_at?: string
+          username?: string | null
         }
         Relationships: []
       }
@@ -113,6 +153,10 @@ export type Database = {
           file_id: string
           found: number
           id: string
+          injection_boolean: boolean
+          injection_error: boolean
+          injection_timebased: boolean
+          injection_union: boolean
           name: string
           parameter_risk_filter: string
           preset: string | null
@@ -123,7 +167,6 @@ export type Database = {
           target: string | null
           updated_at: string
           user_id: string
-          web_crawler: string
         }
         Insert: {
           ai_mode?: boolean
@@ -134,6 +177,10 @@ export type Database = {
           file_id: string
           found?: number
           id?: string
+          injection_boolean?: boolean
+          injection_error?: boolean
+          injection_timebased?: boolean
+          injection_union?: boolean
           name: string
           parameter_risk_filter?: string
           preset?: string | null
@@ -144,7 +191,6 @@ export type Database = {
           target?: string | null
           updated_at?: string
           user_id: string
-          web_crawler?: string
         }
         Update: {
           ai_mode?: boolean
@@ -155,6 +201,10 @@ export type Database = {
           file_id?: string
           found?: number
           id?: string
+          injection_boolean?: boolean
+          injection_error?: boolean
+          injection_timebased?: boolean
+          injection_union?: boolean
           name?: string
           parameter_risk_filter?: string
           preset?: string | null
@@ -165,21 +215,13 @@ export type Database = {
           target?: string | null
           updated_at?: string
           user_id?: string
-          web_crawler?: string
         }
         Relationships: [
           {
             foreignKeyName: "tasks_file_id_fkey"
             columns: ["file_id"]
             isOneToOne: false
-            referencedRelation: "files"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "tasks_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
+            referencedRelation: "user_files"
             referencedColumns: ["id"]
           },
         ]
@@ -189,7 +231,29 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      check_and_downgrade_expired_subscriptions: {
+        Args: never
+        Returns: undefined
+      }
+      check_rate_limit: {
+        Args: {
+          p_action: string
+          p_identifier: string
+          p_max_attempts: number
+          p_window_minutes: number
+        }
+        Returns: Json
+      }
+      cleanup_expired_rate_limits: { Args: never; Returns: undefined }
+      extend_subscription: {
+        Args: { p_additional_days: number; p_user_id: string }
+        Returns: Json
+      }
+      get_subscription_status: { Args: { p_user_id: string }; Returns: Json }
+      set_subscription: {
+        Args: { p_days: number; p_plan: string; p_user_id: string }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

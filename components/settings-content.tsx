@@ -26,6 +26,10 @@ interface UserSettings {
   privacy: boolean
   avatarUrl?: string | null
   avatarHash?: string | null
+  subscription_days?: number
+  subscription_expires_at?: string | null
+  days_remaining?: number | null
+  is_expired?: boolean
 }
 
 export function SettingsContent() {
@@ -81,6 +85,10 @@ export function SettingsContent() {
         privacy: data.privacy,
         avatarUrl: data.avatarUrl,
         avatarHash: data.avatarHash,
+        subscription_days: data.subscription_days,
+        subscription_expires_at: data.subscription_expires_at,
+        days_remaining: data.days_remaining,
+        is_expired: data.is_expired,
       })
     } catch (error) {
       console.error('Failed to fetch settings:', error)
@@ -144,6 +152,16 @@ export function SettingsContent() {
 
   const formatCredits = (credits: number) => {
     return credits.toLocaleString()
+  }
+
+  const formatDate = (dateString: string | null | undefined) => {
+    if (!dateString) return 'N/A'
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    })
   }
 
   if (isLoading) {
@@ -310,7 +328,7 @@ export function SettingsContent() {
           <CardHeader>
             <CardTitle>Plan Details</CardTitle>
             <CardDescription>
-              Compare available plans and features
+              Your current plan and subscription details
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -332,6 +350,19 @@ export function SettingsContent() {
                       <span className="text-muted-foreground">Credits</span>
                       <span className="font-medium">0</span>
                     </div>
+                    {settings?.plan === 'Free' && (
+                      <>
+                        <Separator className="my-2" />
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Purchased Days</span>
+                          <span className="font-medium">∞</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Expires</span>
+                          <span className="font-medium">Never</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                   {settings?.plan === 'Free' && (
                     <div className="pt-2">
@@ -358,6 +389,21 @@ export function SettingsContent() {
                       <span className="text-muted-foreground">Credits</span>
                       <span className="font-medium">2,000</span>
                     </div>
+                    {settings?.plan === 'Pro' && (
+                      <>
+                        <Separator className="my-2" />
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Purchased Days</span>
+                          <span className="font-medium">{settings?.subscription_days || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Expires</span>
+                          <span className={`font-medium ${settings?.is_expired ? 'text-destructive' : ''}`}>
+                            {settings?.is_expired ? 'Expired' : formatDate(settings?.subscription_expires_at)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
                   {settings?.plan === 'Pro' && (
                     <div className="pt-2">
@@ -384,6 +430,21 @@ export function SettingsContent() {
                       <span className="text-muted-foreground">Credits</span>
                       <span className="font-medium">5,000</span>
                     </div>
+                    {settings?.plan === 'Pro+' && (
+                      <>
+                        <Separator className="my-2" />
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Purchased Days</span>
+                          <span className="font-medium">{settings?.subscription_days || 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Expires</span>
+                          <span className={`font-medium ${settings?.is_expired ? 'text-destructive' : ''}`}>
+                            {settings?.is_expired ? 'Expired' : formatDate(settings?.subscription_expires_at)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
                   {settings?.plan === 'Pro+' && (
                     <div className="pt-2">

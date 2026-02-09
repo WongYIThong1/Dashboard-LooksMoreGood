@@ -20,18 +20,10 @@ export async function GET(
 
     const { id: taskId } = await params
 
-    // 获取任务详情，并关联文件信息
+    // 获取任务详情
     const { data: task, error: taskError } = await supabase
       .from('tasks')
-      .select(`
-        *,
-        user_files!tasks_file_id_fkey (
-          id,
-          filename,
-          file_type,
-          line_count
-        )
-      `)
+      .select('*')
       .eq('id', taskId)
       .eq('user_id', user.id)
       .single()
@@ -39,16 +31,27 @@ export async function GET(
     if (taskError) {
       console.error('Task fetch error:', taskError)
       return NextResponse.json(
-        { error: 'Task not found' },
+        { success: false, error: 'Task not found' },
         { status: 404 }
       )
     }
 
     if (!task) {
       return NextResponse.json(
-        { error: 'Task not found or access denied' },
+        { success: false, error: 'Task not found or access denied' },
         { status: 404 }
       )
+    }
+
+    // 获取关联的文件信息
+    const { data: file, error: fileError } = await supabase
+      .from('user_files')
+      .select('id, filename, file_type, line_count, file_path')
+      .eq('id', task.file_id)
+      .single()
+
+    if (fileError) {
+      console.error('File fetch error:', fileError)
     }
 
     // 转换数据格式以匹配前端期望
@@ -57,9 +60,10 @@ export async function GET(
       name: task.name,
       status: task.status,
       file_id: task.file_id,
-      file_name: task.user_files?.filename || 'Unknown',
-      target: task.found || 0, // 使用 found 作为 target
-      credits_used: 10000, // 暂时硬编码，后续可以从其他地方获取
+      file_name: file?.filename || 'Unknown',
+      file_path: file?.file_path || '',
+      target: task.found || 0,
+      credits_used: 10000,
       ai_mode: task.ai_mode,
       auto_dumper: task.auto_dumper,
       preset: task.preset,
@@ -84,7 +88,7 @@ export async function GET(
   } catch (error) {
     console.error('Task detail API error:', error)
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { success: false, error: 'Internal server error' },
       { status: 500 }
     )
   }

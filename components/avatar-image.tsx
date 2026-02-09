@@ -25,6 +25,7 @@ export function AvatarImageComponent({
   const [imageSrc, setImageSrc] = React.useState<string | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [showThumbnail, setShowThumbnail] = React.useState(true)
+  const [imageError, setImageError] = React.useState(false)
 
   const sizeClasses = {
     sm: "h-8 w-8",
@@ -41,54 +42,108 @@ export function AvatarImageComponent({
 
   const bgColor = getUserColor(username)
 
+  // 构建带版本控制的 URL
+  const buildVersionedUrl = React.useCallback((url: string, hash?: string | null) => {
+    if (!url) return null
+    
+    // 移除已有的查询参数
+    const baseUrl = url.split('?')[0]
+    
+    // 添加版本参数（hash）和缓存破坏参数
+    const params = new URLSearchParams()
+    if (hash) {
+      params.set('v', hash)
+    }
+    // 添加一个随机参数来防止过度缓存（仅在开发环境或首次加载时）
+    if (process.env.NODE_ENV === 'development') {
+      params.set('_', Date.now().toString())
+    }
+    
+    return `${baseUrl}?${params.toString()}`
+  }, [])
+
   React.useEffect(() => {
+    // 重置状态
+    setImageError(false)
+    setIsLoading(true)
+    
     if (!avatarUrl) {
       setIsLoading(false)
       setImageSrc(null)
       return
     }
 
-    // 添加 hash 参数作为版本控制，强制浏览器在头像更新时重新加载
-    const versionedUrl = avatarHash 
-      ? `${avatarUrl}?v=${avatarHash}`
-      : avatarUrl
+    let isMounted = true
+    const abortController = new AbortController()
 
-    // 1. 先尝试从缓存加载缩略图
-    const cached = getCachedAvatar(userId)
-    if (cached && cached.hash === avatarHash) {
-      setImageSrc(cached.thumbnail)
-      setShowThumbnail(true)
-      
-      // 2. 然后加载完整图片（带版本参数）
-      const img = new Image()
-      img.onload = () => {
-        setImageSrc(versionedUrl)
-        setShowThumbnail(false)
-        setIsLoading(false)
+    const loadImage = async () => {
+      try {
+        // 1. 先尝试从加密缓存加载缩略图（仅在有缓存且 hash 匹配时）
+        const cached = await getCachedAvatar(userId)
+        if (cached && cached.hash === avatarHash && isMounted) {
+          setImageSrc(cached.thumbnail)
+          setShowThumbnail(true)
+        }
+
+        // 2. 构建完整图片 URL
+        const versionedUrl = buildVersionedUrl(avatarUrl, avatarHash)
+        if (!versionedUrl) {
+          throw new Error('Invalid avatar URL')
+        }
+
+        // 3. 加载完整图片
+        await new Promise<void>((resolve, reject) => {
+          const img = new Image()
+          
+          // 设置 crossOrigin 以支持 CORS
+          img.crossOrigin = "anonymous"
+          
+          img.onload = () => {
+            if (isMounted && !abortController.signal.aborted) {
+              setImageSrc(versionedUrl)
+              setShowThumbnail(false)
+              setIsLoading(false)
+              setImageError(false)
+              resolve()
+            }
+          }
+          
+          img.onerror = () => {
+            if (!abortController.signal.aborted) {
+              reject(new Error('Failed to load image'))
+            }
+          }
+          
+          // 监听 abort 信号
+          abortController.signal.addEventListener('abort', () => {
+            img.src = '' // 取消加载
+            reject(new Error('Image loading aborted'))
+          })
+          
+          img.src = versionedUrl
+        })
+      } catch (error) {
+        if (isMounted && !abortController.signal.aborted) {
+          console.error('Avatar loading error:', error)
+          setImageError(true)
+          setImageSrc(null)
+          setIsLoading(false)
+        }
       }
-      img.onerror = () => {
-        setImageSrc(null)
-        setIsLoading(false)
-      }
-      img.src = versionedUrl
-    } else {
-      // 直接加载完整图片（带版本参数）
-      const img = new Image()
-      img.onload = () => {
-        setImageSrc(versionedUrl)
-        setIsLoading(false)
-      }
-      img.onerror = () => {
-        setImageSrc(null)
-        setIsLoading(false)
-      }
-      img.src = versionedUrl
     }
-  }, [userId, avatarUrl, avatarHash])
+
+    loadImage()
+
+    // 清理函数
+    return () => {
+      isMounted = false
+      abortController.abort()
+    }
+  }, [userId, avatarUrl, avatarHash, buildVersionedUrl])
 
   return (
     <Avatar className={cn(sizeClasses[size], "rounded-lg", className)}>
-      {imageSrc && avatarUrl ? (
+      {imageSrc && avatarUrl && !imageError ? (
         <AvatarImage
           src={imageSrc}
           alt={username}
@@ -97,6 +152,11 @@ export function AvatarImageComponent({
             showThumbnail && "blur-sm scale-105 transition-all duration-300"
           )}
           loading="lazy"
+          onError={() => {
+            // 如果 img 标签加载失败，显示 fallback
+            setImageError(true)
+            setImageSrc(null)
+          }}
         />
       ) : null}
       <AvatarFallback
