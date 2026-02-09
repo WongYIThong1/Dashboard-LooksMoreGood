@@ -1161,7 +1161,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <Checkbox 
                     id="union-based" 
                     checked={unionBased} 
-                    onCheckedChange={setUnionBased} 
+                    onCheckedChange={(checked) => setUnionBased(checked === true)} 
                     disabled={isSaving}
                   />
                   <Label htmlFor="union-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -1174,7 +1174,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <Checkbox 
                     id="error-based" 
                     checked={errorBased} 
-                    onCheckedChange={setErrorBased} 
+                    onCheckedChange={(checked) => setErrorBased(checked === true)} 
                     disabled={isSaving}
                   />
                   <Label htmlFor="error-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -1187,7 +1187,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <Checkbox 
                     id="boolean-based" 
                     checked={booleanBased} 
-                    onCheckedChange={setBooleanBased} 
+                    onCheckedChange={(checked) => setBooleanBased(checked === true)} 
                     disabled={isSaving}
                   />
                   <Label htmlFor="boolean-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -1200,7 +1200,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <Checkbox 
                     id="time-based" 
                     checked={timeBased} 
-                    onCheckedChange={setTimeBased} 
+                    onCheckedChange={(checked) => setTimeBased(checked === true)} 
                     disabled={isSaving}
                   />
                   <Label htmlFor="time-based" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">

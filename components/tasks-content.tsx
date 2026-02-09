@@ -961,7 +961,7 @@ export function TasksContent() {
                     <Checkbox 
                       id="injection-union" 
                       checked={injectionUnion} 
-                      onCheckedChange={setInjectionUnion} 
+                      onCheckedChange={(checked) => setInjectionUnion(checked === true)} 
                       disabled={isCreating}
                     />
                     <Label htmlFor="injection-union" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -974,7 +974,7 @@ export function TasksContent() {
                     <Checkbox 
                       id="injection-error" 
                       checked={injectionError} 
-                      onCheckedChange={setInjectionError} 
+                      onCheckedChange={(checked) => setInjectionError(checked === true)} 
                       disabled={isCreating}
                     />
                     <Label htmlFor="injection-error" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -987,7 +987,7 @@ export function TasksContent() {
                     <Checkbox 
                       id="injection-boolean" 
                       checked={injectionBoolean} 
-                      onCheckedChange={setInjectionBoolean} 
+                      onCheckedChange={(checked) => setInjectionBoolean(checked === true)} 
                       disabled={isCreating}
                     />
                     <Label htmlFor="injection-boolean" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
@@ -1000,7 +1000,7 @@ export function TasksContent() {
                     <Checkbox 
                       id="injection-timebased" 
                       checked={injectionTimebased} 
-                      onCheckedChange={setInjectionTimebased} 
+                      onCheckedChange={(checked) => setInjectionTimebased(checked === true)} 
                       disabled={isCreating}
                     />
                     <Label htmlFor="injection-timebased" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">

@@ -31,6 +31,36 @@ export async function POST(
 
     const { id: taskId } = await params
 
+    // 获取用户 profile 检查 plan 和 credits
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('plan, credits')
+      .eq('id', user.id)
+      .single()
+
+    if (profileError || !profile) {
+      return NextResponse.json(
+        { success: false, error: 'User profile not found' },
+        { status: 404 }
+      )
+    }
+
+    // 检查用户 plan（只允许 Pro 和 Pro+）
+    if (profile.plan === 'Free') {
+      return NextResponse.json(
+        { success: false, error: 'Free plan users cannot start tasks. Please upgrade to Pro or Pro+.' },
+        { status: 403 }
+      )
+    }
+
+    // 检查 credits 是否足够（假设启动任务需要至少 1 credit）
+    if (profile.credits < 1) {
+      return NextResponse.json(
+        { success: false, error: 'Insufficient credits. Please purchase more credits.' },
+        { status: 403 }
+      )
+    }
+
     // 获取任务详情
     const { data: task, error: taskError } = await supabase
       .from('tasks')
@@ -84,36 +114,48 @@ export async function POST(
     const downloadUrl = urlData.signedUrl
 
     // 映射 risk_filter 值
-    let riskFilter = 'high'
+    let riskFilter = 'High'
     if (task.parameter_risk_filter === 'medium-high') {
-      riskFilter = 'high&low'
+      riskFilter = 'High-Med'
     } else if (task.parameter_risk_filter === 'all') {
-      riskFilter = 'all'
+      riskFilter = 'All'
+    }
+
+    // 映射 AI sensitivity 值
+    let aiSensitivity = 'Medium'
+    if (task.ai_sensitivity_level === 'low') {
+      aiSensitivity = 'Low'
+    } else if (task.ai_sensitivity_level === 'high') {
+      aiSensitivity = 'High'
     }
 
     // 准备发送到外部服务器的数据
     const externalApiData = {
-      task_name: task.name,
+      taskname: task.name,
       download_url: downloadUrl,
-      auto_dumper: task.auto_dumper || false,
+      autodumper: task.auto_dumper || false,
       preset: task.preset || '',
-      risk_filter: riskFilter,
-      sensitivity: task.ai_sensitivity_level || 'medium',
+      RiskFiltere: riskFilter,
+      AISensitivity: aiSensitivity,
+      EvasionEngine: task.evasion_engine || false,
+      accesstoken: `Bearer ${session.access_token}`,
     }
 
     console.log('[START TASK] Sending to external API:', {
       taskId,
-      url: `${process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN}/start/${taskId}`,
-      data: externalApiData,
+      url: `${process.env.EXTERNAL_API_DOMAIN}/start/${taskId}`,
+      data: {
+        ...externalApiData,
+        accesstoken: '[REDACTED]', // 不记录 token
+      },
     })
 
     // 发送到外部服务器
-    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+    const externalApiDomain = process.env.EXTERNAL_API_DOMAIN || 'http://localhost:8080'
     const externalResponse = await fetch(`${externalApiDomain}/start/${taskId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${session.access_token}`,
       },
       body: JSON.stringify(externalApiData),
     })
@@ -129,25 +171,11 @@ export async function POST(
       throw new Error(externalData.error || 'Failed to start task on external server')
     }
 
-    // 更新任务状态为 running_recon
-    const { error: updateError } = await supabase
-      .from('tasks')
-      .update({
-        status: 'running_recon',
-        started_at: new Date().toISOString(),
-      })
-      .eq('id', taskId)
-      .eq('user_id', user.id)
-
-    if (updateError) {
-      console.error('Failed to update task status:', updateError)
-      // 不返回错误，因为外部服务器已经启动了任务
-    }
-
+    // 直接返回第三方 API 的响应，不更新数据库
     return NextResponse.json({
       success: true,
-      status: externalData.status || 'recon_running',
-      task_id: taskId,
+      message: 'success',
+      taskid: taskId,
     })
   } catch (error) {
     console.error('Start task API error:', error)

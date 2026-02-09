@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -20,7 +21,7 @@ import { createAntiBotChallenge, validateAntiBotChallenge, cleanupAntiBotChallen
 import { checkRateLimit, recordAttempt } from "@/lib/rate-limit"
 import { MathCaptcha } from "@/components/math-captcha"
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [isLoading, setIsLoading] = React.useState(false)
@@ -330,7 +331,7 @@ export default function LoginPage() {
                 <Checkbox 
                   id="remember" 
                   checked={rememberMe}
-                  onCheckedChange={(checked) => setRememberMe(checked as boolean)}
+                  onCheckedChange={(checked) => setRememberMe(checked === true)}
                   disabled={isLoading}
                 />
                 <Label htmlFor="remember" className="text-sm font-normal cursor-pointer">
@@ -368,5 +369,17 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
+      </div>
+    }>
+      <LoginForm />
+    </Suspense>
   )
 }
