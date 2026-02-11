@@ -168,7 +168,13 @@ export async function POST(
     })
 
     if (!externalResponse.ok) {
-      throw new Error(externalData.error || 'Failed to start task on external server')
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: externalData.error || 'Failed to start task on external server' 
+        },
+        { status: externalResponse.status }
+      )
     }
 
     // 直接返回第三方 API 的响应，不更新数据库

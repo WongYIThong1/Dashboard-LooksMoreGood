@@ -211,7 +211,7 @@ export function FilesContent() {
       setStorageMax(totalBytes)
     } catch (error) {
       console.error('Failed to fetch files:', error)
-      toast.error(error instanceof Error ? error.message : "Failed to load files")
+      toast.error(error instanceof Error ? error.message : "Please Try Again")
     } finally {
       setIsLoading(false)
     }

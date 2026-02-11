@@ -46,9 +46,9 @@ export async function GET() {
       name: task.name,
       status: task.status,
       found: task.found,
-      target: task.target,
+      target: task.target || null, // target 字段（目标数量），如果没有就是 null
       file: task.user_files?.filename || 'Unknown',
-      started_time: task.started_at,
+      started_time: task.started_at || null, // 使用 started_at 作为时间
     }))
 
     return NextResponse.json({

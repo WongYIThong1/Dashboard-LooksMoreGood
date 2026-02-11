@@ -48,6 +48,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
+import { MultiStepLoader } from "@/components/ui/multi-step-loader"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -304,13 +305,32 @@ const columns: ColumnDef<TableRowData>[] = [
 export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const shortId = id.split("-")[0]
 
+  // Loading states for multi-step loader
+  const startLoadingStates = [
+    {
+      text: "Finding Server For Recon",
+    },
+    {
+      text: "Uploading Files To The Server",
+      hasProgress: true,
+    },
+    {
+      text: "Removing Duplicates",
+    },
+    {
+      text: "Starting Recon",
+      hasProgress: true,
+      showStats: true,
+    },
+  ]
+
   // Data state
   const [isLoadingData, setIsLoadingData] = React.useState(true)
   const [isCheckingTask, setIsCheckingTask] = React.useState(true)
   const [taskNotFound, setTaskNotFound] = React.useState(false)
   const [taskStatus, setTaskStatus] = React.useState<"pending" | "running_recon" | "running" | "paused" | "complete" | "failed">("pending")
   const [progress, setProgress] = React.useState({ target: 0, current: 0 })
-  const [creditsUsed, setCreditsUsed] = React.useState(10000)
+  const [creditsUsed, setCreditsUsed] = React.useState(0)
   const [fileId, setFileId] = React.useState<string>("")
   const [storagePath, setStoragePath] = React.useState<string>("")
   
@@ -346,83 +366,27 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [aiSensitivityLevel, setAiSensitivityLevel] = React.useState<"low" | "medium" | "high">("medium")
 
   const [isStarting, setIsStarting] = React.useState(false)
+  const [showStartLoader, setShowStartLoader] = React.useState(false)
+  const [loaderStep, setLoaderStep] = React.useState(0)
+  const [uploadProgress, setUploadProgress] = React.useState(0)
+  const [reconProgress, setReconProgress] = React.useState(0)
+  const [reconStats, setReconStats] = React.useState({ current: 0, total: 100, timeRunning: '0s' })
+  const [startTime, setStartTime] = React.useState<number>(0)
+  const [baseElapsedMs, setBaseElapsedMs] = React.useState<number>(0)
+  const [lastUpdateTime, setLastUpdateTime] = React.useState<number>(0)
+  const [taskDoneReceived, setTaskDoneReceived] = React.useState(false)
+  const [loaderIsDone, setLoaderIsDone] = React.useState(false)
   const hasFetched = React.useRef(false)
+  const sseAbortController = React.useRef<AbortController | null>(null)
+  const timeAnimationInterval = React.useRef<number | null>(null)
+  const sseRetryCount = React.useRef<number>(0)
+  const sseRetryTimer = React.useRef<number | null>(null)
+  
+  // Cache key for localStorage
+  const CACHE_KEY = `task_stats_${id}`
   
   // Data storage
-  const [tableData, setTableData] = React.useState<TableRowData[]>([
-    {
-      id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      country: "US",
-      domain: "example.com",
-      type: "MySQL",
-      database: "users_db",
-      rows: 15420,
-      status: "complete"
-    },
-    {
-      id: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-      country: "UK",
-      domain: "test-site.co.uk",
-      type: "PostgreSQL",
-      database: "accounts",
-      rows: 8932,
-      status: "dumping"
-    },
-    {
-      id: "c3d4e5f6-a7b8-9012-cdef-123456789012",
-      country: "DE",
-      domain: "shop-online.de",
-      type: "MongoDB",
-      database: "products",
-      rows: 0,
-      status: "failed"
-    },
-    {
-      id: "d4e5f6a7-b8c9-0123-def1-234567890123",
-      country: "FR",
-      domain: "webapp.fr",
-      type: "MySQL",
-      database: "sessions",
-      rows: 0,
-      status: "queue"
-    },
-    {
-      id: "e5f6a7b8-c9d0-1234-ef12-345678901234",
-      country: "JP",
-      domain: "portal.jp",
-      type: "MariaDB",
-      database: "logs",
-      rows: 45678,
-      status: "complete"
-    },
-    {
-      id: "f6a7b8c9-d0e1-2345-f123-456789012345",
-      country: "CA",
-      domain: "api.example.ca",
-      type: "MySQL",
-      database: "customers",
-      rows: 23456,
-      status: "dumping"
-    },
-    {
-      id: "a7b8c9d0-e1f2-3456-1234-567890123456",
-      country: "AU",
-      domain: "store.com.au",
-      type: "PostgreSQL",
-      database: "orders",
-      rows: 12890,
-      status: "complete"
-    },
-    {
-      id: "b8c9d0e1-f2a3-4567-2345-678901234567",
-      country: "BR",
-      domain: "site.com.br",
-      type: "MySQL",
-      database: "payments",
-      rows: 0,
-      status: "queue"
-    },
-  ])
+  const [tableData, setTableData] = React.useState<TableRowData[]>([])
   
   // Derived state for pagination
   const totalItems = tableData.length
@@ -480,9 +444,173 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }, [id])
 
+  // Load cached task stats from localStorage
+  const loadCachedStats = () => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY)
+      if (cached) {
+        const data = JSON.parse(cached)
+        console.log('[Cache] 📦 Loaded cached stats:', data)
+        
+        // Restore progress
+        if (data.progress !== undefined) {
+          setReconProgress(data.progress)
+        }
+        
+        // Restore recon stats
+        if (data.reconStats) {
+          setReconStats(data.reconStats)
+          setBaseElapsedMs(data.baseElapsedMs || 0)
+          setLastUpdateTime(Date.now())
+        }
+        
+        // Restore credits
+        if (data.creditsUsed !== undefined) {
+          setCreditsUsed(data.creditsUsed)
+        }
+        
+        return true
+      }
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to load cached stats:', err)
+    }
+    return false
+  }
+  
+  // Save task stats to localStorage
+  const saveCachedStats = (stats: {
+    progress: number
+    reconStats: { current: number; total: number; timeRunning: string }
+    baseElapsedMs: number
+    creditsUsed: number
+  }) => {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(stats))
+      console.log('[Cache] 💾 Saved stats to cache')
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to save stats:', err)
+    }
+  }
+  
+  // Clear cached stats
+  const clearCachedStats = () => {
+    try {
+      localStorage.removeItem(CACHE_KEY)
+      console.log('[Cache] 🗑️ Cleared cached stats')
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to clear cache:', err)
+    }
+  }
+
+  // Cache key for task info
+  const TASK_INFO_CACHE_KEY = `task_info_${id}`
+  
+  // Load cached task info
+  const loadCachedTaskInfo = () => {
+    try {
+      const cached = localStorage.getItem(TASK_INFO_CACHE_KEY)
+      if (cached) {
+        const data = JSON.parse(cached)
+        const cacheAge = Date.now() - (data.timestamp || 0)
+        
+        // Cache valid for 30 seconds
+        if (cacheAge < 30000) {
+          console.log('[Cache] 📦 Using cached task info, age:', Math.round(cacheAge / 1000) + 's')
+          return data.task
+        } else {
+          console.log('[Cache] ⏰ Cache expired, age:', Math.round(cacheAge / 1000) + 's')
+        }
+      }
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to load cached task info:', err)
+    }
+    return null
+  }
+  
+  // Save task info to cache
+  const saveCachedTaskInfo = (task: any) => {
+    try {
+      localStorage.setItem(TASK_INFO_CACHE_KEY, JSON.stringify({
+        task,
+        timestamp: Date.now()
+      }))
+      console.log('[Cache] 💾 Saved task info to cache')
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to save task info:', err)
+    }
+  }
+  
+  // Clear task info cache
+  const clearCachedTaskInfo = () => {
+    try {
+      localStorage.removeItem(TASK_INFO_CACHE_KEY)
+      console.log('[Cache] 🗑️ Cleared task info cache')
+    } catch (err) {
+      console.error('[Cache] ❌ Failed to clear task info cache:', err)
+    }
+  }
+
   // Fetch initial task data
   const fetchTaskData = async (shouldConnectSSE: boolean = false) => {
     setIsLoadingData(true)
+    
+    // Try to load from cache first
+    const cachedTask = loadCachedTaskInfo()
+    if (cachedTask) {
+      console.log('[TaskDetail] 📦 Using cached task data')
+      
+      // Update UI with cached data
+      setTaskName(cachedTask.name || '')
+      setListsFile(cachedTask.file_name || '')
+      setTaskStatus(cachedTask.status || 'pending')
+      setProgress(prev => ({ ...prev, target: cachedTask.target || 0 }))
+      setCreditsUsed(cachedTask.credits_used || 0)
+      setFileId(cachedTask.file_id || '')
+      
+      setAiMode(cachedTask.ai_mode ?? true)
+      setAutoDumper(cachedTask.auto_dumper ?? false)
+      setPreset(cachedTask.preset || '')
+      setParameterRiskFilter(cachedTask.parameter_risk_filter || 'medium-high')
+      setAiSensitivityLevel(cachedTask.ai_sensitivity_level || 'medium')
+      setResponsePatternDrift(cachedTask.response_pattern_drift ?? true)
+      setBaselineProfiling(cachedTask.baseline_profiling ?? true)
+      setStructuralChangeDetection(cachedTask.structural_change_detection ?? false)
+      setUnionBased(cachedTask.union_based ?? true)
+      setErrorBased(cachedTask.error_based ?? true)
+      setBooleanBased(cachedTask.boolean_based ?? false)
+      setTimeBased(cachedTask.time_based ?? false)
+      
+      setIsLoadingData(false)
+      
+      // Handle status-based actions
+      if (cachedTask.status === 'running_recon') {
+        const hasCachedData = loadCachedStats()
+        if (!hasCachedData) {
+          console.log('[TaskDetail] ℹ️ No cached stats data')
+        }
+        setShowStartLoader(true)
+        setLoaderStep(3)
+        if (shouldConnectSSE) {
+          setTimeout(() => connectSSE(), 500)
+        }
+      } else if (cachedTask.status === 'running') {
+        console.log('[TaskDetail] ▶️ Task is running (from cache), connecting SSE')
+        if (shouldConnectSSE) {
+          setTimeout(() => connectSSE(), 500)
+        }
+      }
+      
+      // Still fetch fresh data in background, but don't block UI
+      fetchTaskDataFromAPI(shouldConnectSSE)
+      return
+    }
+    
+    // No cache, fetch from API
+    await fetchTaskDataFromAPI(shouldConnectSSE)
+  }
+  
+  // Fetch task data from API
+  const fetchTaskDataFromAPI = async (shouldConnectSSE: boolean = false) => {
     try {
       const response = await fetch(`/api/v1/tasks/${id}`, {
         method: 'GET',
@@ -493,17 +621,19 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const data = await response.json()
 
       if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Failed to fetch task data')
+        throw new Error(data.message || 'Please Try Again')
       }
 
       const task = data.data
       
+      // Save to cache
+      saveCachedTaskInfo(task)
       // 更新任务基本信息
       setTaskName(task.name || '')
       setListsFile(task.file_name || '')
       setTaskStatus(task.status || 'pending')
       setProgress(prev => ({ ...prev, target: task.target || 0 }))
-      setCreditsUsed(task.credits_used || 10000)
+      setCreditsUsed(task.credits_used || 0)
       setFileId(task.file_id || '')
       
       // 更新任务设置
@@ -520,24 +650,398 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setBooleanBased(task.boolean_based ?? false)
       setTimeBased(task.time_based ?? false)
 
+      // 检查任务状态，如果是 running_recon，自动打开 loader 并连接 SSE
+      if (task.status === 'running_recon') {
+        console.log('[TaskDetail] 🔄 Task is running_recon, auto-opening loader')
+        
+        // 先尝试从缓存加载数据
+        const hasCachedData = loadCachedStats()
+        
+        if (!hasCachedData) {
+          console.log('[TaskDetail] ℹ️ No cached data, starting fresh')
+        }
+        
+        // 打开 multi-step loader，跳到 "Starting Recon" 步骤
+        setShowStartLoader(true)
+        setLoaderStep(3)
+        
+        // 自动连接 SSE
+        if (shouldConnectSSE) {
+          setTimeout(() => {
+            connectSSE()
+          }, 500)
+        }
+      } else if (task.status === 'running') {
+        // 如果是 running 状态，不打开 loader，只连接 SSE
+        console.log('[TaskDetail] ▶️ Task is running, connecting SSE without loader')
+        if (shouldConnectSSE) {
+          setTimeout(() => {
+            connectSSE()
+          }, 500)
+        }
+      } else if (task.status === 'complete' || task.status === 'failed') {
+        // 任务完成或失败，清除所有缓存
+        clearCachedStats()
+        clearCachedTaskInfo()
+      }
+
       // Task data loaded successfully
     } catch (err) {
       console.error("[TaskDetail] Fetch error:", err)
-      toast.error("Failed to load task data")
+      toast.error("Please Try Again")
     } finally {
       setIsLoadingData(false)
     }
   }
 
+  // Format elapsed milliseconds to readable time string
+  const formatElapsedTime = (ms: number): string => {
+    const totalSeconds = Math.floor(ms / 1000)
+    const hours = Math.floor(totalSeconds / 3600)
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
+    const seconds = totalSeconds % 60
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${seconds}s`
+    } else if (minutes > 0) {
+      return `${minutes}m ${seconds}s`
+    } else {
+      return `${seconds}s`
+    }
+  }
+
+  // Animate time continuously
+  React.useEffect(() => {
+    if (baseElapsedMs > 0 && lastUpdateTime > 0) {
+      // Clear previous interval
+      if (timeAnimationInterval.current) {
+        clearInterval(timeAnimationInterval.current)
+      }
+
+      // Start new interval to update time every second
+      timeAnimationInterval.current = window.setInterval(() => {
+        const now = Date.now()
+        const additionalMs = now - lastUpdateTime
+        const totalElapsed = baseElapsedMs + additionalMs
+        
+        setReconStats(prev => ({
+          ...prev,
+          timeRunning: formatElapsedTime(totalElapsed)
+        }))
+      }, 1000)
+
+      return () => {
+        if (timeAnimationInterval.current) {
+          clearInterval(timeAnimationInterval.current)
+        }
+      }
+    }
+  }, [baseElapsedMs, lastUpdateTime])
+
   // Initial fetch - only run once on mount, after task validation
   React.useEffect(() => {
     if (!hasFetched.current && !isCheckingTask && !taskNotFound) {
       hasFetched.current = true
-      fetchTaskData(false) // Fetch task data, auto-connect SSE based on status
+      fetchTaskData(true) // Fetch task data and auto-connect SSE if running_recon
+      
+      // Always try to connect SSE when entering the page
+      console.log('[TaskDetail] 🔌 Auto-connecting SSE on page load')
+      setTimeout(() => {
+        connectSSE()
+      }, 1000)
+    }
+
+    // Cleanup ONLY on unmount (when leaving the page)
+    return () => {
+      if (sseAbortController.current) {
+        sseAbortController.current.abort()
+        console.log('[SSE] Connection closed - user left the page')
+      }
+      if (sseRetryTimer.current) {
+        clearTimeout(sseRetryTimer.current)
+        sseRetryTimer.current = null
+        console.log('[SSE] Retry timer cleared')
+      }
+      if (timeAnimationInterval.current) {
+        clearInterval(timeAnimationInterval.current)
+      }
     }
   }, [isCheckingTask, taskNotFound])
 
-  // Handle page change (client-side only, no server request)
+  // Handle visibility change - keep connection alive when switching tabs
+  React.useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        console.log('[SSE] Tab hidden - keeping connection alive')
+      } else {
+        console.log('[SSE] Tab visible - connection still active')
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
+
+  // SSE connection function with retry
+  const connectSSE = async () => {
+    console.log('[SSE] 🚀 Starting SSE connection for task:', id, 'Retry count:', sseRetryCount.current)
+    
+    // Clear any existing retry timer
+    if (sseRetryTimer.current) {
+      clearTimeout(sseRetryTimer.current)
+      sseRetryTimer.current = null
+    }
+    
+    try {
+      // Abort previous connection if exists
+      if (sseAbortController.current) {
+        console.log('[SSE] ⚠️ Aborting previous connection')
+        sseAbortController.current.abort()
+      }
+
+      // Create new abort controller
+      sseAbortController.current = new AbortController()
+      console.log('[SSE] ✅ Created new AbortController')
+
+      // Get Supabase session for access token
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      const { data: { session } } = await supabase.auth.getSession()
+      
+      if (!session?.access_token) {
+        console.error('[SSE] ❌ No access token available')
+        // Retry after 3 seconds
+        scheduleSSERetry()
+        return
+      }
+      console.log('[SSE] ✅ Access token obtained')
+
+      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+      const sseUrl = `${externalApiDomain}/sse/${id}`
+      
+      console.log('[SSE] 🔗 Connecting to:', sseUrl)
+
+      const response = await fetch(sseUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Accept': 'text/event-stream',
+        },
+        signal: sseAbortController.current.signal,
+      })
+
+      console.log('[SSE] 📡 Fetch response status:', response.status)
+
+      if (!response.ok) {
+        console.error('[SSE] ❌ Connection failed with status:', response.status)
+        // Retry after delay
+        scheduleSSERetry()
+        return
+      }
+
+      // Reset retry count on successful connection
+      sseRetryCount.current = 0
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        console.error('[SSE] ❌ No reader available')
+        scheduleSSERetry()
+        return
+      }
+
+      console.log('[SSE] ✅ Connected successfully, starting to read stream...')
+
+      // Read stream
+      const readStream = async () => {
+        console.log('[SSE] 📖 Starting stream reader loop')
+        let currentEvent = ''
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            
+            if (done) {
+              console.log('[SSE] 🏁 Stream ended')
+              break
+            }
+
+            const chunk = decoder.decode(value, { stream: true })
+            console.log('[SSE] 📦 Received chunk, length:', chunk.length)
+            const lines = chunk.split('\n')
+
+            for (const line of lines) {
+              if (line.startsWith('event: ')) {
+                // Extract event type from SSE event field
+                currentEvent = line.slice(7).trim()
+                console.log('[SSE] 🏷️ Event type:', currentEvent)
+              } else if (line.startsWith('data: ')) {
+                const data = line.slice(6)
+                console.log('[SSE] 📨 Raw data:', data)
+                
+                try {
+                  const parsed = JSON.parse(data)
+                  // Use event type from SSE event field if type is not in data
+                  const eventType = parsed.type || currentEvent
+                  console.log('[SSE] 📊 Parsed event:', {
+                    type: eventType,
+                    taskid: parsed.taskid,
+                    data: parsed
+                  })
+                  
+                  // Reset current event after processing
+                  currentEvent = ''
+                  
+                  // Handle different SSE events
+                  if (eventType === 'task_stats' && parsed.tasks && parsed.tasks.length > 0) {
+                    console.log('[SSE] 📈 Processing task_stats event, tasks count:', parsed.tasks.length)
+                    const taskData = parsed.tasks.find((t: any) => t.taskid === id)
+                    
+                    if (taskData) {
+                      console.log('[SSE] ✅ Found matching task data:', {
+                        taskid: taskData.taskid,
+                        progress: taskData.progress,
+                        groups_done: taskData.groups_done,
+                        groups_total: taskData.groups_total,
+                        elapsed_ms: taskData.elapsed_ms,
+                        credits_used: taskData.credits_used
+                      })
+                      
+                      // Calculate progress percent for multi-step loader
+                      const progressPercent = Math.round((taskData.progress || 0) * 100)
+                      console.log('[SSE] 🎯 Updating multi-step loader progress:', progressPercent + '%')
+                      
+                      // Update recon progress for multi-step loader ONLY
+                      setReconProgress(progressPercent)
+                      
+                      // Update recon stats for multi-step loader ONLY
+                      const elapsedMs = taskData.elapsed_ms || 0
+                      setBaseElapsedMs(elapsedMs)
+                      setLastUpdateTime(Date.now())
+                      
+                      const newReconStats = {
+                        current: taskData.groups_done || 0,
+                        total: taskData.groups_total || 0,
+                        timeRunning: formatElapsedTime(elapsedMs)
+                      }
+                      setReconStats(newReconStats)
+                      
+                      // Save to cache (for multi-step loader state)
+                      saveCachedStats({
+                        progress: progressPercent,
+                        reconStats: newReconStats,
+                        baseElapsedMs: elapsedMs,
+                        creditsUsed: taskData.credits_used || 0
+                      })
+                    } else {
+                      console.log('[SSE] ⚠️ No matching task found for id:', id)
+                    }
+                  } else if (eventType === 'task_done') {
+                    console.log('[SSE] 🎉 Task done received:', parsed)
+                    
+                    // Check if it's for this task
+                    if (parsed.taskid === id) {
+                      console.log('[SSE] ✅ Task done matches current task')
+                      setTaskDoneReceived(true)
+                      setReconProgress(100)
+                      
+                      // Update status to "running" (In Progress) to avoid database query
+                      console.log('[SSE] 🔄 Updating status to running (In Progress)')
+                      setTaskStatus('running')
+                      
+                      // Update credits if credits_reward is provided
+                      if (parsed.credits_reward !== undefined) {
+                        console.log('[SSE] 💰 Credits reward received:', parsed.credits_reward)
+                        setCreditsUsed(prev => prev + parsed.credits_reward)
+                      }
+                      
+                      // Update progress current if success_count is provided
+                      if (parsed.success_count !== undefined) {
+                        console.log('[SSE] 📊 Success count:', parsed.success_count)
+                        setProgress(prev => ({ ...prev, current: parsed.success_count }))
+                      }
+                      
+                      // Clear cache when task is done
+                      clearCachedStats()
+                      clearCachedTaskInfo()
+                      
+                      // Auto close loader after task done
+                      console.log('[SSE] 🔒 Auto-closing loader after task done')
+                      setTimeout(() => {
+                        setShowStartLoader(false)
+                        setTaskDoneReceived(false)
+                        setLoaderIsDone(false)
+                        toast.success('Task Completed Successfully')
+                      }, 2000)
+                    } else {
+                      console.log('[SSE] ⚠️ Task done for different task:', parsed.taskid)
+                    }
+                  } else if (eventType === 'connected') {
+                    console.log('[SSE] 🔌 Connection confirmed:', parsed)
+                  } else if (eventType) {
+                    console.log('[SSE] ❓ Unknown event type:', eventType)
+                  }
+                } catch (e) {
+                  console.error('[SSE] ❌ JSON parse error:', e, 'Raw data:', data)
+                }
+              } else if (line.trim()) {
+                console.log('[SSE] 📝 Non-data line:', line)
+              }
+            }
+          }
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            console.log('[SSE] 🛑 Connection aborted by user/system')
+          } else {
+            console.error('[SSE] ❌ Read error:', error)
+            // Retry on read error
+            scheduleSSERetry()
+          }
+        } finally {
+          console.log('[SSE] 🔒 Releasing reader lock')
+          reader.releaseLock()
+          
+          // If stream ended normally (not aborted), try to reconnect
+          if (sseAbortController.current && !sseAbortController.current.signal.aborted) {
+            console.log('[SSE] 🔄 Stream ended, attempting reconnect')
+            scheduleSSERetry()
+          }
+        }
+      }
+
+      readStream()
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log('[SSE] 🛑 Connection aborted during setup')
+      } else {
+        console.error('[SSE] ❌ Connection error:', error)
+        // Retry on error
+        scheduleSSERetry()
+      }
+    }
+  }
+  
+  // Schedule SSE retry with exponential backoff
+  const scheduleSSERetry = () => {
+    const maxRetries = 10
+    if (sseRetryCount.current >= maxRetries) {
+      console.log('[SSE] ❌ Max retries reached, stopping reconnection attempts')
+      return
+    }
+    
+    sseRetryCount.current++
+    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, max 60s
+    const delay = Math.min(3000 * Math.pow(2, sseRetryCount.current - 1), 60000)
+    console.log(`[SSE] 🔄 Scheduling retry ${sseRetryCount.current}/${maxRetries} in ${delay}ms`)
+    
+    sseRetryTimer.current = window.setTimeout(() => {
+      connectSSE()
+    }, delay)
+  }
+
   const handlePageChange = (newPage: number) => {
     if (newPage >= 1 && newPage <= totalPages) {
       setCurrentPage(newPage)
@@ -563,7 +1067,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const data = await response.json()
 
       if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Failed to fetch task settings')
+        throw new Error(data.message || 'Please Try Again')
       }
 
       const task = data.data
@@ -585,7 +1089,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setTimeBased(task.time_based ?? false)
     } catch (error) {
       console.error('Failed to fetch settings:', error)
-      toast.error("Failed to load settings")
+      toast.error("Please Try Again")
     } finally {
       setIsLoadingSettings(false)
     }
@@ -593,7 +1097,40 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   const handleStart = async () => {
     setIsStarting(true)
+    setShowStartLoader(true)
+    setLoaderStep(0)
+    setUploadProgress(0)
+    setReconProgress(0)
+    setReconStats({ current: 0, total: 100, timeRunning: '0s' })
+    setTaskDoneReceived(false)
+    setLoaderIsDone(false)
+    
     try {
+      // Step 1: Finding Server (simulate 1 second delay)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      setLoaderStep(1)
+      
+      // Step 2: Uploading Files with progress
+      await new Promise<void>((resolve) => {
+        let progress = 0
+        const uploadInterval = setInterval(() => {
+          progress += 5
+          setUploadProgress(progress)
+          if (progress >= 100) {
+            clearInterval(uploadInterval)
+            resolve()
+          }
+        }, 100)
+      })
+      
+      // Small delay before next step
+      await new Promise(resolve => setTimeout(resolve, 500))
+      setLoaderStep(2)
+      
+      // Step 3: Removing Duplicates (simulate 1.5 seconds)
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      setLoaderStep(3)
+      
       // Call the new unified start endpoint
       const response = await fetch(`/api/v1/tasks/${id}/start`, {
         method: 'POST',
@@ -606,24 +1143,45 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const data = await response.json()
 
       if (!response.ok || !data.success) {
-        toast.error(data.error || 'Failed to start task')
+        const errorMessage = data.error === 'Failed to generate download URL' 
+          ? 'Please try again later' 
+          : (data.error || 'Failed to start task')
+        toast.error(errorMessage)
+        setShowStartLoader(false)
         return
       }
 
-      toast.success('Task Started Successfully')
-      
+      // Step 4: Starting Recon - progress will be controlled by SSE
       // Update task status
       setTaskStatus('running_recon')
       
       // Refresh task data to get updated information
       await fetchTaskData(false)
+      
+      // Note: Multi-step loader will stay open until task_done event is received via SSE
     } catch (error) {
       console.error('Start task error:', error)
       toast.error('Please Try Again')
+      setShowStartLoader(false)
     } finally {
       setIsStarting(false)
     }
   }
+  
+  // Close loader when recon progress reaches 100 AND task_done is received
+  React.useEffect(() => {
+    if (reconProgress >= 100 && taskDoneReceived) {
+      console.log('[SSE] ✅ Task completed: progress 100% and task_done received')
+      setLoaderIsDone(true)
+      const timer = setTimeout(() => {
+        setShowStartLoader(false)
+        toast.success('Task Started Successfully')
+        setTaskDoneReceived(false) // Reset for next time
+        setLoaderIsDone(false) // Reset for next time
+      }, 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [reconProgress, taskDoneReceived])
 
   const handleSaveSettings = async () => {
     setIsSaving(true)
@@ -660,7 +1218,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setShowSettings(false)
     } catch (error) {
       console.error('Save settings error:', error)
-      toast.error("Failed to save settings")
+      toast.error("Please Try Again")
     } finally {
       setIsSaving(false)
     }
@@ -668,86 +1226,18 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   const handleDeleteTask = async () => {
     setIsDeleting(true)
-    console.log('[DELETE TASK] ========== Starting Delete Task ==========')
-    console.log('[DELETE TASK] Task ID:', id)
     
     try {
-      // 1. 先删除数据库中的任务
-      console.log('[DELETE TASK] Step 1: Deleting from database...')
       const dbResponse = await fetch(`/api/v1/tasks/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       })
 
       const dbData = await dbResponse.json()
-      console.log('[DELETE TASK] Database response:', {
-        status: dbResponse.status,
-        ok: dbResponse.ok,
-        data: dbData
-      })
 
       if (!dbResponse.ok || !dbData.success) {
-        console.error('[DELETE TASK] ❌ Database delete failed')
         throw new Error(dbData.message || 'Failed to delete task')
       }
-
-      console.log('[DELETE TASK] ✅ Database delete successful')
-
-      // 2. 尝试删除 Redis 中的任务（非阻塞，失败不影响整体流程）
-      console.log('[DELETE TASK] Step 2: Deleting from Redis...')
-      try {
-        // 获取当前 session 的 access token
-        console.log('[DELETE TASK] Getting access token...')
-        const authResponse = await fetch('/api/v1/auth/me', {
-          method: 'GET',
-          credentials: 'include',
-        })
-        
-        if (authResponse.ok) {
-          const authData = await authResponse.json()
-          const accessToken = authData.access_token
-          
-          console.log('[DELETE TASK] Access token retrieved:', accessToken ? 'Yes' : 'No')
-          
-          if (accessToken) {
-            const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-            const redisDeleteUrl = `${externalApiDomain}/api/v1/delete/${id}`
-            
-            console.log('[DELETE TASK] Calling Redis delete API:', redisDeleteUrl)
-            
-            const redisResponse = await fetch(redisDeleteUrl, {
-              method: 'DELETE',
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-              },
-            })
-            
-            console.log('[DELETE TASK] Redis response:', {
-              status: redisResponse.status,
-              ok: redisResponse.ok,
-              statusText: redisResponse.statusText
-            })
-            
-            if (redisResponse.ok) {
-              const redisData = await redisResponse.json().catch(() => ({}))
-              console.log('[DELETE TASK] ✅ Redis delete successful:', redisData)
-            } else {
-              const errorText = await redisResponse.text().catch(() => 'Unknown error')
-              console.warn('[DELETE TASK] ⚠️ Redis delete failed:', errorText)
-            }
-          } else {
-            console.warn('[DELETE TASK] ⚠️ No access token available for Redis delete')
-          }
-        } else {
-          console.warn('[DELETE TASK] ⚠️ Failed to get auth info:', authResponse.status)
-        }
-      } catch (redisError) {
-        // Redis 删除失败不影响整体流程，只记录日志
-        console.warn('[DELETE TASK] ⚠️ Redis delete error (non-critical):', redisError)
-      }
-
-      console.log('[DELETE TASK] ✅ Task deletion completed successfully')
-      console.log('[DELETE TASK] ==========================================')
       
       toast.success("Task deleted successfully")
       setShowDeleteDialog(false)
@@ -755,9 +1245,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       // 重定向到任务列表页面
       window.location.href = '/tasks'
     } catch (error) {
-      console.error('[DELETE TASK] ❌ Task deletion failed:', error)
-      console.log('[DELETE TASK] ==========================================')
-      toast.error("Failed to delete task")
+      console.error('Task deletion failed:', error)
+      toast.error("Please Try Again")
     } finally {
       setIsDeleting(false)
     }
@@ -797,7 +1286,19 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   }
 
   return (
-    <div className="flex flex-1 flex-col min-w-0 font-[family-name:var(--font-inter)]">
+    <>
+      {/* Multi-step loader for task start */}
+      <MultiStepLoader
+        loadingStates={startLoadingStates}
+        loading={showStartLoader}
+        currentStep={loaderStep}
+        externalProgress={loaderStep === 1 ? uploadProgress : loaderStep === 3 ? reconProgress : undefined}
+        statsData={loaderStep === 3 ? reconStats : undefined}
+        loop={false}
+        isDone={loaderIsDone}
+      />
+      
+      <div className="flex flex-1 flex-col min-w-0 font-[family-name:var(--font-inter)]">
       {/* Header */}
       <div className="flex flex-col border-b">
         <div className="h-16 px-6 flex items-center justify-between w-full">
@@ -900,7 +1401,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 <div>
                   <p className="text-sm font-medium font-[family-name:var(--font-inter)]">Progress</p>
                   <p className="text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
-                    {(progress?.current ?? 0).toLocaleString()} / {(progress?.target ?? 0).toLocaleString()}
+                    {progress?.target > 0 ? `${(progress?.current ?? 0).toLocaleString()} / ${(progress?.target ?? 0).toLocaleString()}` : '-'}
                   </p>
                 </div>
               </div>
@@ -939,18 +1440,20 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         </div>
 
         {/* Progress Bar */}
-        <div className="mt-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-muted-foreground">Progress</span>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium font-[family-name:var(--font-jetbrains-mono)]">
-                {progress?.current ?? 0} / {progress?.target ?? 0}
-              </span>
-              <span className="text-sm text-muted-foreground">({progressPercent}%)</span>
+        {progress?.target > 0 && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-muted-foreground">Progress</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium font-[family-name:var(--font-jetbrains-mono)]">
+                  {progress?.current ?? 0} / {progress?.target ?? 0}
+                </span>
+                <span className="text-sm text-muted-foreground">({progressPercent}%)</span>
+              </div>
             </div>
+            <Progress value={progressPercent} className="h-1" />
           </div>
-          <Progress value={progressPercent} className="h-1" />
-        </div>
+        )}
       </div>
 
       {/* Table */}
@@ -1372,6 +1875,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+      </div>
+    </>
   )
 }

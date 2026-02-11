@@ -348,7 +348,7 @@ export function TasksContent() {
       setAvailableFiles(urlsFiles)
     } catch (error) {
       console.error('Failed to load files:', error)
-      toast.error("Failed to load files")
+      toast.error("Please Try Again")
       setAvailableFiles([])
     } finally {
       setIsLoadingFiles(false)
@@ -516,7 +516,7 @@ export function TasksContent() {
       setTasksData(transformedTasks)
     } catch (error) {
       console.error('Failed to load tasks:', error)
-      toast.error("Failed to load tasks")
+      toast.error("Please Try Again")
       setTasksData([])
       setMaxTasks(0)
       setUserPlan('Free')

@@ -67,7 +67,7 @@ export function SettingsContent() {
       if (!response.ok) {
         const error = await response.json()
         console.error('Failed to fetch settings:', error)
-        toast.error("Failed to load user settings")
+        toast.error("Please Try Again")
         return
       }
 
@@ -92,7 +92,7 @@ export function SettingsContent() {
       })
     } catch (error) {
       console.error('Failed to fetch settings:', error)
-      toast.error("Failed to load settings")
+      toast.error("Please Try Again")
     } finally {
       setIsLoading(false)
     }

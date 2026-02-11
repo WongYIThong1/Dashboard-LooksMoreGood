@@ -64,6 +64,7 @@ const LoadingSpinner = ({ className }: { className?: string }) => {
 type LoadingState = {
   text: string;
   hasProgress?: boolean;
+  showStats?: boolean;
 };
 
 export const MultiStepLoader = ({
@@ -74,6 +75,8 @@ export const MultiStepLoader = ({
   onComplete,
   currentStep: externalStep,
   externalProgress,
+  statsData,
+  isDone: externalIsDone,
 }: {
   loadingStates: LoadingState[];
   loading?: boolean;
@@ -82,6 +85,12 @@ export const MultiStepLoader = ({
   onComplete?: () => void;
   currentStep?: number;
   externalProgress?: number;
+  statsData?: {
+    current: number;
+    total: number;
+    timeRunning: string;
+  };
+  isDone?: boolean;
 }) => {
   const [internalState, setInternalState] = useState(0);
   const [internalProgress, setInternalProgress] = useState(0);
@@ -92,7 +101,7 @@ export const MultiStepLoader = ({
   // Use external step if provided, otherwise use internal
   const currentState = externalStep !== undefined ? externalStep : internalState;
   const progress = externalProgress !== undefined ? externalProgress : internalProgress;
-  const isDone = (externalProgress !== undefined && externalProgress >= 100) || internalDone;
+  const isDone = externalIsDone !== undefined ? externalIsDone : internalDone;
 
   useEffect(() => {
     return () => {
@@ -190,8 +199,8 @@ export const MultiStepLoader = ({
           transition={{ duration: 0.2 }}
           className="fixed inset-0 z-[100] flex items-center justify-center"
         >
-          {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/50" />
+          {/* Backdrop with blur */}
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
           
           {/* Dialog */}
           <motion.div
@@ -236,16 +245,23 @@ export const MultiStepLoader = ({
                   {loadingState.hasProgress && index === currentState && (
                     <div className="ml-8">
                       <Progress value={progress} className="h-1.5" />
-                      <p className="text-xs text-muted-foreground mt-1 font-[family-name:var(--font-jetbrains-mono)]">
-                        {progress}%
-                      </p>
+                      <div className="flex items-center justify-between mt-1">
+                        <p className="text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
+                          {progress}%
+                        </p>
+                        {loadingState.showStats && statsData && (
+                          <p className="text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
+                            {statsData.current}/{statsData.total} • {statsData.timeRunning}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   )}
                 </motion.div>
               ))}
               
-              {/* Done message */}
-              {isDone && (
+              {/* Done message - only show when all steps are complete */}
+              {isDone && currentState === loadingStates.length - 1 && (
                 <motion.div
                   initial={{ opacity: 0, y: 5 }}
                   animate={{ opacity: 1, y: 0 }}

@@ -62,8 +62,8 @@ export async function GET(
       file_id: task.file_id,
       file_name: file?.filename || 'Unknown',
       file_path: file?.file_path || '',
-      target: task.found || 0,
-      credits_used: 10000,
+      target: task.target ? parseInt(task.target) : 0, // target 是目标数量（字符串转数字）
+      credits_used: 0,
       ai_mode: task.ai_mode,
       auto_dumper: task.auto_dumper,
       preset: task.preset,

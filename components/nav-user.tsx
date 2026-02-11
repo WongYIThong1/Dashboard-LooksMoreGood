@@ -183,14 +183,14 @@ export function NavUser() {
             privacy: profile.privacy_mode,
           })
         } else {
-          toast.error("Failed to load user settings")
+          toast.error("Please Try Again")
         }
       } else {
-        toast.error("Failed to load user settings")
+        toast.error("Please Try Again")
       }
     } catch (error) {
       console.error('Failed to fetch settings:', error)
-      toast.error("Failed to load settings")
+      toast.error("Please Try Again")
     } finally {
       setIsLoading(false)
     }
