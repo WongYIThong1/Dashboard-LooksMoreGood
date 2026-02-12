@@ -2,18 +2,29 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
 export async function POST(request: Request) {
+  const startTime = Date.now()
+  
   try {
+    console.log('[Avatar Upload] 📤 Starting upload process')
+    
     const supabase = await createClient()
     
     // 获取当前用户
+    const authStart = Date.now()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
+    const authTime = Date.now() - authStart
+    
+    console.log(`[Avatar Upload] 🔐 Auth check took: ${authTime}ms`)
     
     if (authError || !user) {
+      console.log('[Avatar Upload] ❌ Unauthorized')
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
       )
     }
+
+    console.log(`[Avatar Upload] ✅ User authenticated: ${user.id}`)
 
     // 获取上传的文件
     const formData = await request.formData()
@@ -21,6 +32,7 @@ export async function POST(request: Request) {
     const hash = formData.get('hash') as string
 
     if (!file) {
+      console.log('[Avatar Upload] ❌ No file provided')
       return NextResponse.json(
         { error: 'No file provided' },
         { status: 400 }
@@ -28,15 +40,19 @@ export async function POST(request: Request) {
     }
 
     if (!hash) {
+      console.log('[Avatar Upload] ❌ No hash provided')
       return NextResponse.json(
         { error: 'No hash provided' },
         { status: 400 }
       )
     }
 
+    console.log(`[Avatar Upload] 📁 File: ${file.name}, size: ${file.size} bytes, type: ${file.type}, hash: ${hash}`)
+
     // 验证文件类型
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
     if (!validTypes.includes(file.type)) {
+      console.log(`[Avatar Upload] ❌ Invalid file type: ${file.type}`)
       return NextResponse.json(
         { error: 'Invalid file type' },
         { status: 400 }
@@ -45,6 +61,7 @@ export async function POST(request: Request) {
 
     // 验证文件大小 (2MB)
     if (file.size > 2 * 1024 * 1024) {
+      console.log(`[Avatar Upload] ❌ File too large: ${file.size} bytes`)
       return NextResponse.json(
         { error: 'File too large' },
         { status: 400 }
@@ -59,27 +76,33 @@ export async function POST(request: Request) {
       .single()
 
     if (profile?.avatar_url) {
-      // 从 URL 提取文件路径
       const oldPath = profile.avatar_url.split('/avatars/')[1]
       if (oldPath) {
+        console.log(`[Avatar Upload] 🗑️  Deleting old avatar: ${oldPath}`)
         await supabase.storage.from('avatars').remove([oldPath])
       }
     }
 
-    // 上传新头像
+    // 上传新头像（使用 hash 作为文件名）
     const fileExt = file.name.split('.').pop() || 'webp'
     const filePath = `${user.id}/${hash}.${fileExt}`
     
+    console.log(`[Avatar Upload] ⬆️  Uploading to: ${filePath}`)
+    
+    const uploadStart = Date.now()
     const { error: uploadError } = await supabase.storage
       .from('avatars')
       .upload(filePath, file, {
-        cacheControl: 'public, max-age=31536000', // 1年缓存，但允许通过版本参数更新
+        cacheControl: 'public, max-age=31536000, immutable', // 1年缓存 + immutable
         upsert: false,
         contentType: file.type,
       })
+    const uploadTime = Date.now() - uploadStart
+
+    console.log(`[Avatar Upload] ⬆️  Upload took: ${uploadTime}ms`)
 
     if (uploadError) {
-      console.error('Upload error:', uploadError)
+      console.error('[Avatar Upload] ❌ Upload error:', uploadError)
       return NextResponse.json(
         { error: 'Failed to upload avatar' },
         { status: 500 }
@@ -92,16 +115,18 @@ export async function POST(request: Request) {
       .getPublicUrl(filePath)
 
     if (!urlData.publicUrl) {
+      console.log('[Avatar Upload] ❌ Failed to get public URL')
       return NextResponse.json(
         { error: 'Failed to get public URL' },
         { status: 500 }
       )
     }
 
-    // 确保 URL 是完整的公开 URL
     const publicUrl = urlData.publicUrl
+    console.log(`[Avatar Upload] 🔗 Public URL: ${publicUrl}`)
 
     // 更新数据库
+    const dbStart = Date.now()
     const { error: updateError } = await supabase
       .from('user_profiles')
       .update({
@@ -110,14 +135,20 @@ export async function POST(request: Request) {
         avatar_updated_at: new Date().toISOString(),
       })
       .eq('id', user.id)
+    const dbTime = Date.now() - dbStart
+
+    console.log(`[Avatar Upload] 🗄️  DB update took: ${dbTime}ms`)
 
     if (updateError) {
-      console.error('Update error:', updateError)
+      console.error('[Avatar Upload] ❌ Update error:', updateError)
       return NextResponse.json(
         { error: 'Failed to update profile' },
         { status: 500 }
       )
     }
+
+    const totalTime = Date.now() - startTime
+    console.log(`[Avatar Upload] ✅ Success - Total: ${totalTime}ms (Auth: ${authTime}ms, Upload: ${uploadTime}ms, DB: ${dbTime}ms)`)
 
     return NextResponse.json({
       success: true,
@@ -125,7 +156,8 @@ export async function POST(request: Request) {
       hash,
     })
   } catch (error) {
-    console.error('Avatar upload error:', error)
+    const totalTime = Date.now() - startTime
+    console.error(`[Avatar Upload] ❌ Error after ${totalTime}ms:`, error)
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

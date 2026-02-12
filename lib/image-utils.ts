@@ -1,11 +1,11 @@
 // 图片处理工具
 import imageCompression from 'browser-image-compression'
 
-// 压缩和调整图片大小
+// 压缩和调整图片大小（保持原始尺寸，服务端会处理多尺寸）
 export async function compressImage(file: File): Promise<File> {
   const options = {
     maxSizeMB: 1, // 最大 1MB
-    maxWidthOrHeight: 256, // 最大尺寸 256x256
+    maxWidthOrHeight: 512, // 最大尺寸 512x512（服务端会生成多尺寸）
     useWebWorker: true,
     fileType: 'image/webp', // 转换为 WebP
   }

@@ -249,7 +249,7 @@ export const MultiStepLoader = ({
                         <p className="text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
                           {progress}%
                         </p>
-                        {loadingState.showStats && statsData && (
+                        {loadingState.showStats && statsData && statsData.total > 0 && (
                           <p className="text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
                             {statsData.current}/{statsData.total} • {statsData.timeRunning}
                           </p>

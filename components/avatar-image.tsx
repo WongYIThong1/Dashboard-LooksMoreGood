@@ -42,24 +42,10 @@ export function AvatarImageComponent({
 
   const bgColor = getUserColor(username)
 
-  // 构建带版本控制的 URL
-  const buildVersionedUrl = React.useCallback((url: string, hash?: string | null) => {
-    if (!url) return null
-    
-    // 移除已有的查询参数
-    const baseUrl = url.split('?')[0]
-    
-    // 添加版本参数（hash）和缓存破坏参数
-    const params = new URLSearchParams()
-    if (hash) {
-      params.set('v', hash)
-    }
-    // 添加一个随机参数来防止过度缓存（仅在开发环境或首次加载时）
-    if (process.env.NODE_ENV === 'development') {
-      params.set('_', Date.now().toString())
-    }
-    
-    return `${baseUrl}?${params.toString()}`
+  // 构建 Image Proxy URL（使用路径而非 query）
+  const buildProxyUrl = React.useCallback((userId: string, sizeNum: number) => {
+    // 使用我们自己的 Image Proxy API
+    return `/api/avatar/proxy/${userId}/${sizeNum}`
   }, [])
 
   React.useEffect(() => {
@@ -68,6 +54,7 @@ export function AvatarImageComponent({
     setIsLoading(true)
     
     if (!avatarUrl) {
+      console.log(`[AvatarImage] No avatar URL for user: ${userId}`)
       setIsLoading(false)
       setImageSrc(null)
       return
@@ -77,30 +64,42 @@ export function AvatarImageComponent({
     const abortController = new AbortController()
 
     const loadImage = async () => {
+      const loadStart = Date.now()
+      console.log(`[AvatarImage] 🚀 Loading avatar for user: ${userId}, size: ${size}, hash: ${avatarHash}`)
+
       try {
         // 1. 先尝试从加密缓存加载缩略图（仅在有缓存且 hash 匹配时）
+        const cacheStart = Date.now()
         const cached = await getCachedAvatar(userId)
+        const cacheTime = Date.now() - cacheStart
+
         if (cached && cached.hash === avatarHash && isMounted) {
+          console.log(`[AvatarImage] ✅ Cache hit (${cacheTime}ms) - showing thumbnail`)
           setImageSrc(cached.thumbnail)
           setShowThumbnail(true)
+        } else {
+          console.log(`[AvatarImage] ❌ Cache miss or hash mismatch (${cacheTime}ms)`)
         }
 
-        // 2. 构建完整图片 URL
-        const versionedUrl = buildVersionedUrl(avatarUrl, avatarHash)
-        if (!versionedUrl) {
-          throw new Error('Invalid avatar URL')
-        }
+        // 2. 根据尺寸选择合适的图片大小
+        const sizeMap = { sm: 64, md: 128, lg: 256 }
+        const targetSize = sizeMap[size]
 
-        // 3. 加载完整图片
+        // 3. 构建 Image Proxy URL（路径级别的缓存）
+        const proxyUrl = buildProxyUrl(userId, targetSize)
+        console.log(`[AvatarImage] 📡 Fetching from proxy: ${proxyUrl}`)
+
+        // 4. 加载完整图片
+        const imgStart = Date.now()
         await new Promise<void>((resolve, reject) => {
           const img = new Image()
           
-          // 设置 crossOrigin 以支持 CORS
-          img.crossOrigin = "anonymous"
-          
           img.onload = () => {
             if (isMounted && !abortController.signal.aborted) {
-              setImageSrc(versionedUrl)
+              const imgTime = Date.now() - imgStart
+              const totalTime = Date.now() - loadStart
+              console.log(`[AvatarImage] ✅ Image loaded (${imgTime}ms) - Total: ${totalTime}ms`)
+              setImageSrc(proxyUrl)
               setShowThumbnail(false)
               setIsLoading(false)
               setImageError(false)
@@ -108,8 +107,10 @@ export function AvatarImageComponent({
             }
           }
           
-          img.onerror = () => {
+          img.onerror = (e) => {
             if (!abortController.signal.aborted) {
+              const imgTime = Date.now() - imgStart
+              console.error(`[AvatarImage] ❌ Image load failed (${imgTime}ms):`, e)
               reject(new Error('Failed to load image'))
             }
           }
@@ -120,11 +121,12 @@ export function AvatarImageComponent({
             reject(new Error('Image loading aborted'))
           })
           
-          img.src = versionedUrl
+          img.src = proxyUrl
         })
       } catch (error) {
         if (isMounted && !abortController.signal.aborted) {
-          console.error('Avatar loading error:', error)
+          const totalTime = Date.now() - loadStart
+          console.error(`[AvatarImage] ❌ Avatar loading error (${totalTime}ms):`, error)
           setImageError(true)
           setImageSrc(null)
           setIsLoading(false)
@@ -139,7 +141,7 @@ export function AvatarImageComponent({
       isMounted = false
       abortController.abort()
     }
-  }, [userId, avatarUrl, avatarHash, buildVersionedUrl])
+  }, [userId, avatarUrl, avatarHash, size, buildProxyUrl])
 
   return (
     <Avatar className={cn(sizeClasses[size], "rounded-lg", className)}>

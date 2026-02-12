@@ -370,7 +370,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [loaderStep, setLoaderStep] = React.useState(0)
   const [uploadProgress, setUploadProgress] = React.useState(0)
   const [reconProgress, setReconProgress] = React.useState(0)
-  const [reconStats, setReconStats] = React.useState({ current: 0, total: 100, timeRunning: '0s' })
+  const [reconStats, setReconStats] = React.useState({ current: 0, total: 0, timeRunning: '0s' })
   const [startTime, setStartTime] = React.useState<number>(0)
   const [baseElapsedMs, setBaseElapsedMs] = React.useState<number>(0)
   const [lastUpdateTime, setLastUpdateTime] = React.useState<number>(0)
@@ -381,6 +381,9 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const timeAnimationInterval = React.useRef<number | null>(null)
   const sseRetryCount = React.useRef<number>(0)
   const sseRetryTimer = React.useRef<number | null>(null)
+  const sseConnectionState = React.useRef<'idle' | 'connecting' | 'connected'>('idle')
+  const sseConnectionId = React.useRef<number>(0)
+  const taskDoneToastShown = React.useRef<boolean>(false)
   
   // Cache key for localStorage
   const CACHE_KEY = `task_stats_${id}`
@@ -550,6 +553,83 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }
 
+  // Fetch task data from external API
+  const fetchTaskFromExternalAPI = async (): Promise<any | null> => {
+    try {
+      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+      const url = `${externalApiDomain}/task/${id}`
+      
+      console.log('[External API] 🌐 Fetching task data from:', url)
+      
+      // Get Supabase session for access token
+      const { createClient } = await import('@/lib/supabase/client')
+      const supabase = createClient()
+      const { data: { session } } = await supabase.auth.getSession()
+      
+      if (!session?.access_token) {
+        console.error('[External API] ❌ No access token available')
+        return null
+      }
+      
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+      
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Accept': 'application/json',
+        },
+        signal: controller.signal,
+      })
+      
+      clearTimeout(timeoutId)
+      
+      if (!response.ok) {
+        console.error('[External API] ❌ HTTP error:', response.status)
+        return null
+      }
+      
+      const data = await response.json()
+      console.log('[External API] ✅ Data received:', data)
+      
+      // Parse progress string "0/123" -> { current: 0, target: 123 }
+      let progressData = { current: 0, target: 0 }
+      if (data.progress && typeof data.progress === 'string') {
+        const parts = data.progress.split('/')
+        if (parts.length === 2) {
+          progressData = {
+            current: parseInt(parts[0]) || 0,
+            target: parseInt(parts[1]) || 0
+          }
+        }
+      }
+      
+      // Map status from external API to internal format
+      let mappedStatus = data.status
+      if (data.status === 'recon_running') {
+        mappedStatus = 'running_recon'
+      } else if (data.status === 'pending') {
+        mappedStatus = 'pending'
+      }
+      // Other statuses: running, paused, complete, failed remain the same
+      
+      return {
+        progress: progressData,
+        credits: data.credits || 0,
+        status: mappedStatus,
+        source: 'external'
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error('[External API] ⏱️ Request timeout')
+      } else {
+        console.error('[External API] ❌ Request failed:', error)
+      }
+      return null
+    }
+  }
+
   // Fetch initial task data
   const fetchTaskData = async (shouldConnectSSE: boolean = false) => {
     setIsLoadingData(true)
@@ -609,8 +689,76 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     await fetchTaskDataFromAPI(shouldConnectSSE)
   }
   
-  // Fetch task data from API
+  // Fetch task data from API (external first, then Supabase fallback)
   const fetchTaskDataFromAPI = async (shouldConnectSSE: boolean = false) => {
+    try {
+      // Step 1: Try external API first
+      const externalData = await fetchTaskFromExternalAPI()
+      
+      if (externalData) {
+        console.log('[TaskDetail] ✅ Using external API data')
+        
+        // Update progress from external API
+        setProgress({
+          current: externalData.progress.current,
+          target: externalData.progress.target
+        })
+        
+        // Update credits from external API
+        setCreditsUsed(externalData.credits)
+        
+        // Update status from external API
+        setTaskStatus(externalData.status)
+        
+        // Cache the external data (simplified cache)
+        saveCachedTaskInfo({
+          status: externalData.status,
+          target: externalData.progress.target,
+          credits_used: externalData.credits,
+          // Keep other fields from previous cache or defaults
+          name: taskName || 'Task',
+          file_name: listsFile || 'Unknown',
+        })
+        
+        // Handle status-based actions
+        if (externalData.status === 'running_recon') {
+          console.log('[TaskDetail] 🔄 Status is running_recon, opening loader')
+          const hasCachedData = loadCachedStats()
+          if (!hasCachedData) {
+            console.log('[TaskDetail] ℹ️ No cached stats data')
+          }
+          setShowStartLoader(true)
+          setLoaderStep(3)
+          if (shouldConnectSSE) {
+            setTimeout(() => connectSSE(), 500)
+          }
+        } else if (externalData.status === 'running') {
+          console.log('[TaskDetail] ▶️ Status is running, connecting SSE without loader')
+          if (shouldConnectSSE) {
+            setTimeout(() => connectSSE(), 500)
+          }
+        }
+        
+        // Still fetch full data from Supabase in background for other fields
+        // Don't connect SSE again since we already connected above
+        fetchFullTaskDataFromSupabase(false)
+        return
+      }
+      
+      // Step 2: Fallback to Supabase if external API failed
+      console.log('[TaskDetail] ⚠️ External API failed, falling back to Supabase')
+      await fetchFullTaskDataFromSupabase(shouldConnectSSE)
+      
+    } catch (err) {
+      console.error("[TaskDetail] Fetch error:", err)
+      toast.error("Please Try Again")
+    } finally {
+      setIsLoadingData(false)
+    }
+  }
+  
+  // Fetch full task data from Supabase
+  const fetchFullTaskDataFromSupabase = async (shouldConnectSSE: boolean = false) => {
     try {
       const response = await fetch(`/api/v1/tasks/${id}`, {
         method: 'GET',
@@ -753,6 +901,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
     // Cleanup ONLY on unmount (when leaving the page)
     return () => {
+      sseConnectionState.current = 'idle'
+      sseConnectionId.current += 1
       if (sseAbortController.current) {
         sseAbortController.current.abort()
         console.log('[SSE] Connection closed - user left the page')
@@ -787,10 +937,18 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   // SSE connection function with retry
   const connectSSE = async () => {
-    console.log('[SSE] 🚀 Starting SSE connection for task:', id, 'Retry count:', sseRetryCount.current)
+    const timestamp = new Date().toISOString()
+    if (sseConnectionState.current !== 'idle' && sseAbortController.current && !sseAbortController.current.signal.aborted) {
+      console.log(`[SSE] ⏭️ [${timestamp}] Connection already active, skipping new connect`)
+      return
+    }
+    console.log(`[SSE] 🚀 [${timestamp}] Starting SSE connection for task:`, id, 'Retry count:', sseRetryCount.current)
+    sseConnectionState.current = 'connecting'
+    const connectionId = ++sseConnectionId.current
     
     // Clear any existing retry timer
     if (sseRetryTimer.current) {
+      console.log(`[SSE] ⏹️ [${timestamp}] Clearing existing retry timer`)
       clearTimeout(sseRetryTimer.current)
       sseRetryTimer.current = null
     }
@@ -798,12 +956,14 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     try {
       // Abort previous connection if exists
       if (sseAbortController.current) {
-        console.log('[SSE] ⚠️ Aborting previous connection')
+        console.log(`[SSE] ⚠️ [${timestamp}] Aborting previous connection`)
         sseAbortController.current.abort()
       }
 
       // Create new abort controller
-      sseAbortController.current = new AbortController()
+      const localController = new AbortController()
+      sseAbortController.current = localController
+      console.log(`[SSE] 🆕 [${timestamp}] Created new abort controller`)
       console.log('[SSE] ✅ Created new AbortController')
 
       // Get Supabase session for access token
@@ -830,7 +990,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           'Authorization': `Bearer ${session.access_token}`,
           'Accept': 'text/event-stream',
         },
-        signal: sseAbortController.current.signal,
+        signal: localController.signal,
       })
 
       console.log('[SSE] 📡 Fetch response status:', response.status)
@@ -838,19 +998,26 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       if (!response.ok) {
         console.error('[SSE] ❌ Connection failed with status:', response.status)
         // Retry after delay
-        scheduleSSERetry()
+        if (connectionId === sseConnectionId.current) {
+          sseConnectionState.current = 'idle'
+          scheduleSSERetry(connectionId)
+        }
         return
       }
 
       // Reset retry count on successful connection
       sseRetryCount.current = 0
+      sseConnectionState.current = 'connected'
 
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
 
       if (!reader) {
         console.error('[SSE] ❌ No reader available')
-        scheduleSSERetry()
+        if (connectionId === sseConnectionId.current) {
+          sseConnectionState.current = 'idle'
+          scheduleSSERetry(connectionId)
+        }
         return
       }
 
@@ -940,44 +1107,57 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                       console.log('[SSE] ⚠️ No matching task found for id:', id)
                     }
                   } else if (eventType === 'task_done') {
-                    console.log('[SSE] 🎉 Task done received:', parsed)
+                    const timestamp = new Date().toISOString()
+                    console.log(`[SSE] 🎉 [${timestamp}] Task done received:`, parsed)
+                    console.log(`[SSE] 📍 [${timestamp}] Current taskDoneReceived state:`, taskDoneReceived)
                     
                     // Check if it's for this task
                     if (parsed.taskid === id) {
-                      console.log('[SSE] ✅ Task done matches current task')
+                      console.log(`[SSE] ✅ [${timestamp}] Task done matches current task`)
+                      console.log(`[SSE] 🔍 [${timestamp}] Setting taskDoneReceived to true`)
                       setTaskDoneReceived(true)
                       setReconProgress(100)
                       
                       // Update status to "running" (In Progress) to avoid database query
-                      console.log('[SSE] 🔄 Updating status to running (In Progress)')
+                      console.log(`[SSE] 🔄 [${timestamp}] Updating status to running (In Progress)`)
                       setTaskStatus('running')
                       
                       // Update credits if credits_reward is provided
                       if (parsed.credits_reward !== undefined) {
-                        console.log('[SSE] 💰 Credits reward received:', parsed.credits_reward)
+                        console.log(`[SSE] 💰 [${timestamp}] Credits reward received:`, parsed.credits_reward)
                         setCreditsUsed(prev => prev + parsed.credits_reward)
                       }
                       
                       // Update progress current if success_count is provided
                       if (parsed.success_count !== undefined) {
-                        console.log('[SSE] 📊 Success count:', parsed.success_count)
+                        console.log(`[SSE] 📊 [${timestamp}] Success count:`, parsed.success_count)
                         setProgress(prev => ({ ...prev, current: parsed.success_count }))
                       }
                       
                       // Clear cache when task is done
+                      console.log(`[SSE] 🗑️ [${timestamp}] Clearing cache`)
                       clearCachedStats()
                       clearCachedTaskInfo()
                       
                       // Auto close loader after task done
-                      console.log('[SSE] 🔒 Auto-closing loader after task done')
+                      console.log(`[SSE] 🔒 [${timestamp}] Scheduling auto-close loader in 2 seconds`)
                       setTimeout(() => {
+                        console.log(`[SSE] 🎬 [${new Date().toISOString()}] Executing auto-close callback`)
                         setShowStartLoader(false)
                         setTaskDoneReceived(false)
                         setLoaderIsDone(false)
-                        toast.success('Task Completed Successfully')
+                        
+                        // Only show toast once
+                        if (!taskDoneToastShown.current) {
+                          console.log(`[SSE] 🎉 [${new Date().toISOString()}] Showing completion toast (first time)`)
+                          taskDoneToastShown.current = true
+                          toast.success('Recon Completed Successfully')
+                        } else {
+                          console.log(`[SSE] ⏭️ [${new Date().toISOString()}] Skipping toast (already shown)`)
+                        }
                       }, 2000)
                     } else {
-                      console.log('[SSE] ⚠️ Task done for different task:', parsed.taskid)
+                      console.log(`[SSE] ⚠️ [${timestamp}] Task done for different task:`, parsed.taskid, 'Expected:', id)
                     }
                   } else if (eventType === 'connected') {
                     console.log('[SSE] 🔌 Connection confirmed:', parsed)
@@ -995,19 +1175,26 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
             console.log('[SSE] 🛑 Connection aborted by user/system')
+            if (connectionId === sseConnectionId.current) {
+              sseConnectionState.current = 'idle'
+            }
           } else {
             console.error('[SSE] ❌ Read error:', error)
             // Retry on read error
-            scheduleSSERetry()
+            if (connectionId === sseConnectionId.current) {
+              sseConnectionState.current = 'idle'
+              scheduleSSERetry(connectionId)
+            }
           }
         } finally {
           console.log('[SSE] 🔒 Releasing reader lock')
           reader.releaseLock()
           
           // If stream ended normally (not aborted), try to reconnect
-          if (sseAbortController.current && !sseAbortController.current.signal.aborted) {
+          if (connectionId === sseConnectionId.current && !localController.signal.aborted) {
             console.log('[SSE] 🔄 Stream ended, attempting reconnect')
-            scheduleSSERetry()
+            sseConnectionState.current = 'idle'
+            scheduleSSERetry(connectionId)
           }
         }
       }
@@ -1016,28 +1203,42 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('[SSE] 🛑 Connection aborted during setup')
+        if (connectionId === sseConnectionId.current) {
+          sseConnectionState.current = 'idle'
+        }
       } else {
         console.error('[SSE] ❌ Connection error:', error)
         // Retry on error
-        scheduleSSERetry()
+        if (connectionId === sseConnectionId.current) {
+          sseConnectionState.current = 'idle'
+          scheduleSSERetry(connectionId)
+        }
       }
     }
   }
   
   // Schedule SSE retry with exponential backoff
-  const scheduleSSERetry = () => {
+  const scheduleSSERetry = (connectionId?: number) => {
+    if (connectionId !== undefined && connectionId !== sseConnectionId.current) {
+      return
+    }
+    if (sseConnectionState.current !== 'idle') {
+      return
+    }
+    const timestamp = new Date().toISOString()
     const maxRetries = 10
     if (sseRetryCount.current >= maxRetries) {
-      console.log('[SSE] ❌ Max retries reached, stopping reconnection attempts')
+      console.log(`[SSE] ❌ [${timestamp}] Max retries reached, stopping reconnection attempts`)
       return
     }
     
     sseRetryCount.current++
     // Exponential backoff: 3s, 6s, 12s, 24s, 48s, max 60s
     const delay = Math.min(3000 * Math.pow(2, sseRetryCount.current - 1), 60000)
-    console.log(`[SSE] 🔄 Scheduling retry ${sseRetryCount.current}/${maxRetries} in ${delay}ms`)
+    console.log(`[SSE] 🔄 [${timestamp}] Scheduling retry ${sseRetryCount.current}/${maxRetries} in ${delay}ms`)
     
     sseRetryTimer.current = window.setTimeout(() => {
+      console.log(`[SSE] ⏰ [${new Date().toISOString()}] Retry timer fired, calling connectSSE()`)
       connectSSE()
     }, delay)
   }
@@ -1101,9 +1302,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     setLoaderStep(0)
     setUploadProgress(0)
     setReconProgress(0)
-    setReconStats({ current: 0, total: 100, timeRunning: '0s' })
+    setReconStats({ current: 0, total: 0, timeRunning: '0s' })
     setTaskDoneReceived(false)
     setLoaderIsDone(false)
+    taskDoneToastShown.current = false // Reset toast flag for new task
     
     try {
       // Step 1: Finding Server (simulate 1 second delay)
@@ -1175,7 +1377,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setLoaderIsDone(true)
       const timer = setTimeout(() => {
         setShowStartLoader(false)
-        toast.success('Task Started Successfully')
         setTaskDoneReceived(false) // Reset for next time
         setLoaderIsDone(false) // Reset for next time
       }, 1000)
