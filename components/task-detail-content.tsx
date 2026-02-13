@@ -194,113 +194,103 @@ const statusConfig = {
   },
 }
 
-const columns: ColumnDef<TableRowData>[] = [
-  {
-    accessorKey: "id",
-    header: "ID",
-    cell: ({ row }) => {
-      const id = row.getValue("id") as string
-      const shortId = id.split("-")[0]
-      return (
-        <span className="font-[family-name:var(--font-jetbrains-mono)] text-xs text-muted-foreground">{shortId}</span>
-      )
+function getColumns(taskId: string): ColumnDef<TableRowData>[] {
+  return [
+    {
+      accessorKey: "id",
+      header: "ID",
+      cell: ({ row }) => {
+        const id = row.getValue("id") as string
+        const shortId = id.split("-")[0]
+        return <span className="font-mono text-xs text-muted-foreground">{shortId}</span>
+      },
     },
-  },
-  {
-    accessorKey: "country",
-    header: "Country",
-    cell: ({ row }) => {
-      const country = row.getValue("country") as string
-      return (
-        <span className="font-medium">{country || "Unknown"}</span>
-      )
+    {
+      accessorKey: "country",
+      header: "Country",
+      cell: ({ row }) => {
+        const country = row.getValue("country") as string
+        return <span className="font-medium">{country || "Unknown"}</span>
+      },
     },
-  },
-  {
-    accessorKey: "domain",
-    header: "Domain",
-    cell: ({ row }) => {
-      const domain = row.getValue("domain") as string
-      return (
-        <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)] text-sm">{domain || "-"}</span>
-      )
+    {
+      accessorKey: "domain",
+      header: "Domain",
+      cell: ({ row }) => {
+        const domain = row.getValue("domain") as string
+        return <span className="font-mono text-sm text-muted-foreground">{domain || "-"}</span>
+      },
     },
-  },
-  {
-    accessorKey: "type",
-    header: "Type",
-    cell: ({ row }) => {
-      const type = row.getValue("type") as string
-      return type !== "-" ? (
-        <Badge variant="secondary" className="font-[family-name:var(--font-jetbrains-mono)] text-xs">
-          {type}
-        </Badge>
-      ) : (
-        <span className="text-muted-foreground text-sm">-</span>
-      )
+    {
+      accessorKey: "type",
+      header: "Type",
+      cell: ({ row }) => {
+        const type = row.getValue("type") as string
+        return type !== "-" ? (
+          <Badge variant="secondary" className="font-mono text-xs">
+            {type}
+          </Badge>
+        ) : (
+          <span className="text-sm text-muted-foreground">-</span>
+        )
+      },
     },
-  },
-  {
-    accessorKey: "database",
-    header: "Database",
-    cell: ({ row }) => {
-      const database = row.getValue("database") as string
-      return (
-        <span className="text-foreground font-medium font-[family-name:var(--font-jetbrains-mono)] text-sm">{database || "-"}</span>
-      )
+    {
+      accessorKey: "database",
+      header: "Database",
+      cell: ({ row }) => {
+        const database = row.getValue("database") as string
+        return <span className="font-mono text-sm font-medium">{database || "-"}</span>
+      },
     },
-  },
-  {
-    accessorKey: "rows",
-    header: () => <div className="text-right">Rows</div>,
-    cell: ({ row }) => {
-      const rows = row.getValue("rows") as number
-      return (
-        <div className="text-right">
-          <span className="font-semibold font-[family-name:var(--font-jetbrains-mono)] text-sm">
-            {rows > 0 ? rows.toLocaleString() : "-"}
-          </span>
-        </div>
-      )
+    {
+      accessorKey: "rows",
+      header: () => <div className="text-right">Rows</div>,
+      cell: ({ row }) => {
+        const rows = row.getValue("rows") as number
+        return (
+          <div className="text-right">
+            <span className="font-mono text-sm font-medium">
+              {rows > 0 ? rows.toLocaleString() : "-"}
+            </span>
+          </div>
+        )
+      },
     },
-  },
-  {
-    accessorKey: "status",
-    header: "Status",
-    cell: ({ row }) => {
-      const status = row.getValue("status") as keyof typeof statusConfig
-      const config = statusConfig[status]
-      const StatusIcon = config.icon
-      return (
-        <Badge variant="outline" className={`gap-1.5 ${config.className}`}>
-          <StatusIcon size={12} className={config.iconClass} />
-          <span className="font-medium">{config.label}</span>
-        </Badge>
-      )
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => {
+        const status = row.getValue("status") as keyof typeof statusConfig
+        const config = statusConfig[status]
+        const StatusIcon = config.icon
+        return (
+          <Badge variant="outline" className={`gap-1.5 ${config.className}`}>
+            <StatusIcon size={12} className={config.iconClass} />
+            <span className="font-medium">{config.label}</span>
+          </Badge>
+        )
+      },
     },
-  },
-  {
-    id: "actions",
-    cell: ({ row }) => (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-8">
-            <IconDotsVertical size={16} />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem asChild>
-            <a href={`/tasks/1/${row.original.id}`}>View details</a>
-          </DropdownMenuItem>
-          <DropdownMenuItem>Download</DropdownMenuItem>
-          <DropdownMenuItem>Retry</DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-red-500">Delete</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    ),
-  },
-]
+    {
+      id: "actions",
+      cell: ({ row }) => (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" className="shrink-0">
+              <IconDotsVertical size={16} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem asChild>
+              <a href={`/tasks/${taskId}/${row.original.id}`}>View database</a>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ),
+    },
+  ]
+}
 
 export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const shortId = id.split("-")[0]
@@ -390,6 +380,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   
   // Data storage
   const [tableData, setTableData] = React.useState<TableRowData[]>([])
+
+  const columns = React.useMemo(() => getColumns(id), [id])
   
   // Derived state for pagination
   const totalItems = tableData.length

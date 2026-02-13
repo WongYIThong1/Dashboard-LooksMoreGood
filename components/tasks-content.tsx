@@ -10,26 +10,14 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconLoader2,
-  IconSparkles,
-  IconPencil,
   IconList,
-  IconWorld,
-  IconShield,
-  IconAdjustments,
-  IconWaveSine,
-  IconChartLine,
-  IconBinaryTree,
-  IconBrain,
-  IconEye,
   IconBook,
-  IconShieldCheck,
-  IconBolt,
-  IconBulb,
+  IconX,
+  IconShield,
+  IconSparkles,
+  IconAdjustments,
   IconCpu,
-  IconDatabase,
-  IconGitMerge,
-  IconAlertTriangle,
-  IconToggleLeft,
+  IconShieldCheck,
 } from "@tabler/icons-react"
 import {
   flexRender,
@@ -44,7 +32,14 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion"
 import {
   Dialog,
   DialogContent,
@@ -67,12 +62,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import {
   Table,
   TableBody,
   TableCell,
@@ -83,6 +72,8 @@ import {
 import { toast } from "sonner"
 
 type TaskStatus = "pending" | "running_recon" | "running" | "paused" | "complete" | "failed"
+
+type UrlsFile = { id: string; name: string; type?: string }
 
 interface Task {
   id: string
@@ -107,12 +98,12 @@ interface ApiTask {
 }
 
 const statusConfig = {
-  pending: { icon: IconClock, label: "Pending", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-yellow-500" },
-  running_recon: { icon: IconLoader2, label: "Running Recon", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-purple-500 animate-spin" },
-  running: { icon: IconLoader2, label: "In Progress", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-blue-500 animate-spin" },
-  paused: { icon: IconClock, label: "Paused", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-orange-500" },
-  complete: { icon: IconCircleCheck, label: "Completed", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-emerald-500" },
-  failed: { icon: IconAlertCircle, label: "Failed", className: "text-foreground border-border bg-transparent hover:bg-muted", iconClass: "text-red-500" },
+  pending: { icon: IconClock, label: "Pending", dotClass: "bg-muted-foreground" },
+  running_recon: { icon: IconLoader2, label: "Running recon", dotClass: "bg-blue-500" },
+  running: { icon: IconLoader2, label: "Running", dotClass: "bg-blue-500" },
+  paused: { icon: IconClock, label: "Paused", dotClass: "bg-orange-500" },
+  complete: { icon: IconCircleCheck, label: "Complete", dotClass: "bg-emerald-500" },
+  failed: { icon: IconAlertCircle, label: "Failed", dotClass: "bg-red-500" },
 }
 
 // Component for running task duration that updates every second
@@ -155,36 +146,11 @@ function RunningDuration({ startedTime }: { startedTime: string }) {
   }, [startedTime])
 
   return (
-    <div className="text-right text-muted-foreground flex items-center justify-end gap-1">
-      <IconClock size={14} className="text-blue-500" />
-      <span className="font-[family-name:var(--font-jetbrains-mono)]">{duration}</span>
-    </div>
+    <div className="text-right text-muted-foreground font-mono">{duration}</div>
   )
 }
 
 const columns: ColumnDef<Task>[] = [
-  {
-    id: "select",
-    header: ({ table }) => (
-      <Checkbox
-        checked={
-          table.getIsAllPageRowsSelected() ||
-          (table.getIsSomePageRowsSelected() && "indeterminate")
-        }
-        onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-        aria-label="Select all"
-      />
-    ),
-    cell: ({ row }) => (
-      <Checkbox
-        checked={row.getIsSelected()}
-        onCheckedChange={(value) => row.toggleSelected(!!value)}
-        aria-label="Select row"
-      />
-    ),
-    enableSorting: false,
-    enableHiding: false,
-  },
   {
     accessorKey: "name",
     header: "Task",
@@ -200,9 +166,12 @@ const columns: ColumnDef<Task>[] = [
       const config = statusConfig[status as TaskStatus] || statusConfig.pending
       const StatusIcon = config.icon
       return (
-        <Badge variant="outline" className={config.className}>
-          <StatusIcon size={12} className={config.iconClass} />
-          {config.label}
+        <Badge variant="outline" className="bg-transparent">
+          <span className={`size-1.5 rounded-full ${config.dotClass}`} />
+          <span className="text-foreground">{config.label}</span>
+          {(status === "running" || status === "running_recon") && (
+            <StatusIcon size={12} className="text-muted-foreground animate-spin" />
+          )}
         </Badge>
       )
     },
@@ -211,7 +180,7 @@ const columns: ColumnDef<Task>[] = [
     accessorKey: "found",
     header: "Found",
     cell: ({ row }) => (
-      <span className="text-foreground font-medium font-[family-name:var(--font-jetbrains-mono)]">{row.getValue("found")}</span>
+      <span className="font-mono text-sm font-medium">{row.getValue("found")}</span>
     ),
   },
   {
@@ -220,7 +189,7 @@ const columns: ColumnDef<Task>[] = [
     cell: ({ row }) => {
       const target = row.getValue("target") as string | null
       return (
-        <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">{target || "-"}</span>
+        <span className="font-mono text-sm text-muted-foreground">{target || "-"}</span>
       )
     },
   },
@@ -233,7 +202,7 @@ const columns: ColumnDef<Task>[] = [
   },
   {
     accessorKey: "started",
-    header: () => <div className="text-right">Started / Duration</div>,
+    header: () => <div className="text-right">Started</div>,
     cell: ({ row }) => {
       const isRunning = row.original.isRunning
       const startedTime = row.original.startedTime
@@ -270,13 +239,8 @@ const columns: ColumnDef<Task>[] = [
           <DropdownMenuItem asChild>
             <a href={`/tasks/${row.original.id}`}>View details</a>
           </DropdownMenuItem>
-          <DropdownMenuItem asChild>
-            <a href={`/tasks/1/${row.original.id}`}>View database</a>
-          </DropdownMenuItem>
-          <DropdownMenuItem>Pause</DropdownMenuItem>
-          <DropdownMenuItem>Restart</DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-red-500">Delete</DropdownMenuItem>
+          <DropdownMenuItem className="text-red-600 focus:text-red-600">Delete</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     ),
@@ -288,17 +252,23 @@ export function TasksContent() {
   const [tasksData, setTasksData] = React.useState<Task[]>([])
   const [maxTasks, setMaxTasks] = React.useState(0)
   const [userPlan, setUserPlan] = React.useState<string | null>(null)
-  const [rowSelection, setRowSelection] = React.useState({})
   const [showCreateDialog, setShowCreateDialog] = React.useState(false)
-  const [aiMode, setAiMode] = React.useState(true)
   const [autoDumper, setAutoDumper] = React.useState(false)
-  const [availableFiles, setAvailableFiles] = React.useState<Array<{ id: string; name: string }>>([])
+  const [availableFiles, setAvailableFiles] = React.useState<UrlsFile[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = React.useState(false)
   const [isCreating, setIsCreating] = React.useState(false)
   const [taskName, setTaskName] = React.useState("")
   const [selectedFileId, setSelectedFileId] = React.useState("")
   const [preset, setPreset] = React.useState("")
-  
+  const [query, setQuery] = React.useState("")
+  const [statusFilter, setStatusFilter] = React.useState<"all" | TaskStatus>("all")
+  const [createAdvanced, setCreateAdvanced] = React.useState<string[]>([])
+  const aiMode = true
+
+  React.useEffect(() => {
+    if (!showCreateDialog) setCreateAdvanced([])
+  }, [showCreateDialog])
+
   // AI Settings
   const [parameterRiskFilter, setParameterRiskFilter] = React.useState<"high" | "medium-high" | "all">("medium-high")
   const [responsePatternDrift, setResponsePatternDrift] = React.useState(true)
@@ -338,11 +308,8 @@ export function TasksContent() {
 
       // 只显示 type 为 "urls" 的文件
       const urlsFiles = (data.files || [])
-        .filter((file: any) => file.type === 'urls')
-        .map((file: any) => ({
-          id: file.id,
-          name: file.name,
-        }))
+        .filter((file: UrlsFile) => file.type === 'urls')
+        .map((file: UrlsFile) => ({ id: file.id, name: file.name }))
       
       console.log('Loaded URLs files:', urlsFiles)
       setAvailableFiles(urlsFiles)
@@ -381,7 +348,7 @@ export function TasksContent() {
           file_id: selectedFileId,
           auto_dumper: autoDumper,
           preset: preset || null,
-          ai_mode: aiMode,
+          ai_mode: true,
           parameter_risk_filter: parameterRiskFilter,
           ai_sensitivity_level: aiSensitivityLevel,
           response_pattern_drift: responsePatternDrift,
@@ -413,7 +380,6 @@ export function TasksContent() {
       setShowCreateDialog(false)
       setTaskName("")
       setSelectedFileId("")
-      setAiMode(true)
       setAutoDumper(false)
       setPreset("")
       setParameterRiskFilter("medium-high")
@@ -525,267 +491,265 @@ export function TasksContent() {
     }
   }
 
+  const filteredTasks = React.useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return tasksData.filter((t) => {
+      if (statusFilter !== "all" && t.status !== statusFilter) return false
+      if (!q) return true
+      return (
+        t.name.toLowerCase().includes(q) ||
+        t.id.toLowerCase().includes(q) ||
+        (t.target || "").toLowerCase().includes(q) ||
+        (t.file || "").toLowerCase().includes(q)
+      )
+    })
+  }, [tasksData, query, statusFilter])
+
+  const usagePercent =
+    maxTasks > 0 ? Math.min(100, Math.round((tasksData.length / maxTasks) * 100)) : 0
+
   const table = useReactTable({
-    data: tasksData,
+    data: filteredTasks,
     columns,
-    state: {
-      rowSelection,
-    },
-    enableRowSelection: true,
-    onRowSelectionChange: setRowSelection,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
   })
 
   return (
-    <div className="flex flex-1 flex-col min-w-0 p-6">
-      {/* Header Section */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Manage and monitor your scanning tasks
-            </p>
-          </div>
-          <Button 
-            size="default"
-            onClick={() => {
-              // 检查用户计划
-              if (userPlan === 'Free') {
-                toast.error('Free plan users cannot create tasks. Please upgrade to Pro or Pro+.')
-                return
-              }
-
-              // 检查是否达到任务限制
-              if (tasksData.length >= maxTasks) {
-                toast.error(`Task limit reached. You have ${tasksData.length} of ${maxTasks} tasks. Please delete some tasks or upgrade your plan.`)
-                return
-              }
-
-              setShowCreateDialog(true)
-            }}
-            disabled={userPlan === 'Free' || tasksData.length >= maxTasks}
-          >
-            <IconPlus size={16} className="mr-2" />
-            Create Task
-          </Button>
-        </div>
-
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
-          <div className="rounded-lg border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">Total Tasks</p>
-                <p className="text-2xl font-bold mt-1">{tasksData.length}</p>
+    <div className="flex flex-1 flex-col min-w-0">
+      <div className="flex-1 overflow-auto">
+        <div className="px-6 py-6 space-y-6">
+          {/* Quiet header row (outer breadcrumb header already exists) */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <div className="text-lg font-semibold tracking-tight">Tasks</div>
+              <div className="text-sm text-muted-foreground">
+                {maxTasks > 0 ? (
+                  <>
+                    <span className="font-mono text-foreground">
+                      {tasksData.length}/{maxTasks}
+                    </span>{" "}
+                    used
+                    <span className="mx-2 text-muted-foreground/60">•</span>
+                    <span className="font-mono">{Math.max(0, maxTasks - tasksData.length)}</span>{" "}
+                    remaining
+                  </>
+                ) : (
+                  <>{tasksData.length} tasks</>
+                )}
               </div>
-              <div className="p-3 rounded-full bg-primary/10">
-                <IconList className="size-5 text-primary" />
-              </div>
+              {maxTasks > 0 && (
+                <div className="pt-2 max-w-[320px]">
+                  <Progress value={usagePercent} className="h-1" />
+                </div>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              {maxTasks - tasksData.length} slots available
-            </p>
-          </div>
 
-          <div className="rounded-lg border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">Running</p>
-                <p className="text-2xl font-bold mt-1">
-                  {tasksData.filter(t => t.status === 'running' || t.status === 'running_recon').length}
-                </p>
-              </div>
-              <div className="p-3 rounded-full bg-blue-500/10">
-                <IconLoader2 className="size-5 text-blue-500 animate-spin" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Active scans
-            </p>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (userPlan === "Free") {
+                  toast.error("Free plan users cannot create tasks. Please upgrade to Pro or Pro+.")
+                  return
+                }
+                if (tasksData.length >= maxTasks) {
+                  toast.error(
+                    `Task limit reached. You have ${tasksData.length} of ${maxTasks} tasks. Please delete some tasks or upgrade your plan.`
+                  )
+                  return
+                }
+                setShowCreateDialog(true)
+              }}
+              disabled={userPlan === "Free" || (maxTasks > 0 && tasksData.length >= maxTasks)}
+            >
+              <IconPlus className="size-4" />
+              Create task
+            </Button>
           </div>
-
-          <div className="rounded-lg border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">Completed</p>
-                <p className="text-2xl font-bold mt-1">
-                  {tasksData.filter(t => t.status === 'complete').length}
-                </p>
-              </div>
-              <div className="p-3 rounded-full bg-emerald-500/10">
-                <IconCircleCheck className="size-5 text-emerald-500" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Successfully finished
-            </p>
-          </div>
-
-          <div className="rounded-lg border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-muted-foreground">Total Found</p>
-                <p className="text-2xl font-bold mt-1">
-                  {tasksData.reduce((sum, t) => sum + t.found, 0)}
-                </p>
-              </div>
-              <div className="p-3 rounded-full bg-purple-500/10">
-                <IconSparkles className="size-5 text-purple-500" />
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Vulnerabilities detected
-            </p>
-          </div>
-        </div>
-      </div>
 
       {/* Table Section */}
-      <div className="rounded-lg border bg-card">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          <>
-            <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="hover:bg-transparent">
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
-                  </TableHead>
-                ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {table.getRowModel().rows?.length ? (
-              table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  data-state={row.getIsSelected() && "selected"}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : (
-              <TableRow className="hover:bg-transparent">
-                <TableCell
-                  colSpan={columns.length}
-                  className="h-[400px]"
-                >
-                  <div className="flex flex-col items-center justify-center text-center py-12">
-                    <div className="flex size-20 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25 mb-4">
-                      <IconList className="size-10 text-muted-foreground/50" strokeWidth={1.5} />
-                    </div>
-                    <h3 className="text-lg font-semibold tracking-tight mb-2">
-                      No tasks yet
-                    </h3>
-                    <p className="text-sm text-muted-foreground mb-6 max-w-[420px]">
-                      Create your first task to start scanning
-                    </p>
-                    {(userPlan === 'Pro' || userPlan === 'Pro+') && tasksData.length < maxTasks && (
-                      <Button 
-                        onClick={() => setShowCreateDialog(true)}
-                        size="sm"
-                      >
-                        <IconPlus size={16} className="mr-2" />
-                        Create Task
-                      </Button>
-                    )}
-                    {userPlan === 'Free' && (
-                      <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-md text-sm text-muted-foreground">
-                        <IconShield size={16} />
-                        <span>Upgrade to Pro or Pro+ to create tasks</span>
-                      </div>
-                    )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+          <div className="space-y-3">
+            {/* Toolbar (not inside a card) */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-1 items-center gap-2">
+                <Input
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value)
+                    table.setPageIndex(0)
+                  }}
+                  placeholder="Search task name, target, file..."
+                  className="h-9 max-w-[420px]"
+                />
+                <div className="text-sm text-muted-foreground">
+                  {table.getPrePaginationRowModel().rows.length} results
+                </div>
+              </div>
 
-        {table.getRowModel().rows?.length > 0 && (
-          <div className="flex items-center justify-between px-4 py-4 border-t">
-            <div className="text-sm text-muted-foreground">
-              {table.getFilteredSelectedRowModel().rows.length} of{" "}
-              {table.getFilteredRowModel().rows.length} row(s) selected
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-8"
-                onClick={() => table.previousPage()}
-                disabled={!table.getCanPreviousPage()}
+              <Select
+                value={statusFilter}
+                onValueChange={(v) => {
+                  setStatusFilter(v as typeof statusFilter)
+                  table.setPageIndex(0)
+                }}
               >
-                <IconChevronLeft className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-8"
-                onClick={() => table.nextPage()}
-                disabled={!table.getCanNextPage()}
-              >
-                <IconChevronRight className="size-4" />
-              </Button>
+                <SelectTrigger className="h-9 w-[180px]">
+                  <SelectValue placeholder="Filter status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="running_recon">Running recon</SelectItem>
+                  <SelectItem value="running">Running</SelectItem>
+                  <SelectItem value="paused">Paused</SelectItem>
+                  <SelectItem value="complete">Complete</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+
+            {/* Table (integrated, minimal chrome) */}
+            <div className="border-y">
+              {isLoading ? (
+                <div className="flex items-center justify-center h-64">
+                  <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    {table.getHeaderGroups().map((headerGroup) => (
+                      <TableRow
+                        key={headerGroup.id}
+                        className="bg-muted/30 hover:bg-muted/30"
+                      >
+                        {headerGroup.headers.map((header) => (
+                          <TableHead
+                            key={header.id}
+                            className={[
+                              "text-xs font-medium text-muted-foreground",
+                              header.column.id === "started" ? "text-right" : "",
+                            ].join(" ")}
+                          >
+                            {header.isPlaceholder
+                              ? null
+                              : flexRender(header.column.columnDef.header, header.getContext())}
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {table.getRowModel().rows?.length ? (
+                      table.getRowModel().rows.map((row) => (
+                        <TableRow key={row.id}>
+                          {row.getVisibleCells().map((cell) => (
+                            <TableCell key={cell.id}>
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={columns.length} className="h-[400px]">
+                          <div className="flex flex-col items-center justify-center text-center py-12">
+                            <div className="flex size-20 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25 mb-4">
+                              <IconList className="size-10 text-muted-foreground/50" strokeWidth={1.5} />
+                            </div>
+                            <h3 className="text-lg font-semibold tracking-tight mb-2">No tasks yet</h3>
+                            <p className="text-sm text-muted-foreground mb-6 max-w-[420px]">
+                              Create your first task to start scanning
+                            </p>
+                            {(userPlan === "Pro" || userPlan === "Pro+") &&
+                              tasksData.length < maxTasks && (
+                                <Button onClick={() => setShowCreateDialog(true)} size="sm">
+                                  <IconPlus className="size-4" />
+                                  Create task
+                                </Button>
+                              )}
+                            {userPlan === "Free" && (
+                              <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-md text-sm text-muted-foreground">
+                                <IconShield className="size-4" />
+                                <span>Upgrade to Pro or Pro+ to create tasks</span>
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+
+            {table.getRowModel().rows?.length > 0 && (
+              <div className="flex items-center justify-between py-1">
+                <div className="text-sm text-muted-foreground">
+                  Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => table.previousPage()}
+                    disabled={!table.getCanPreviousPage()}
+                  >
+                    <IconChevronLeft className="size-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    onClick={() => table.nextPage()}
+                    disabled={!table.getCanNextPage()}
+                  >
+                    <IconChevronRight className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-          </>
-        )}
+        </div>
       </div>
 
       {/* Create Task Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="sm:max-w-[680px] max-h-[85vh] overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-          <DialogHeader>
-            <DialogTitle>Create New Task</DialogTitle>
-            <DialogDescription>
-              Configure your task settings below
-            </DialogDescription>
+        <DialogContent className="sm:max-w-[720px] max-h-[85vh] overflow-y-auto scrollbar-hide">
+          <DialogHeader className="flex-row items-start justify-between">
+            <div className="space-y-1 text-left">
+              <DialogTitle>Create new task</DialogTitle>
+              <DialogDescription>Configure settings and start scanning.</DialogDescription>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              type="button"
+              className="h-7 px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
+              onClick={() => window.open('https://docs.example.com', '_blank')}
+            >
+              <IconBook className="size-4" />
+              Docs
+            </Button>
           </DialogHeader>
           
-          <form onSubmit={handleCreateTask} className="space-y-5 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="task-name">Task Name</Label>
-              <div className="relative">
-                <IconPencil className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-                <Input 
-                  id="task-name" 
-                  placeholder="Enter task name" 
-                  className="pl-10"
+          <form onSubmit={handleCreateTask} className="space-y-6 py-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="task-name">Task name</Label>
+                <Input
+                  id="task-name"
+                  placeholder="e.g. My first scan"
                   value={taskName}
                   onChange={(e) => setTaskName(e.target.value)}
                   disabled={isCreating}
                 />
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="file">Lists</Label>
-              <div className="relative">
-                <IconList className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground z-10" />
+              <div className="space-y-2">
+                <Label htmlFor="file">Lists</Label>
                 <Select value={selectedFileId} onValueChange={setSelectedFileId} disabled={isCreating}>
-                  <SelectTrigger className="w-full pl-10">
+                  <SelectTrigger className="w-full">
                     <SelectValue placeholder={isLoadingFiles ? "Loading..." : "Select a file"} />
                   </SelectTrigger>
                   <SelectContent position="popper" sideOffset={4} className="w-[var(--radix-select-trigger-width)]">
@@ -801,218 +765,240 @@ export function TasksContent() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-500/10">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-4 text-blue-500">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 15.75-2.489-2.489m0 0a3.375 3.375 0 1 0-4.773-4.773 3.375 3.375 0 0 0 4.774 4.774ZM21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                  </svg>
-                </div>
-                <div>
-                  <Label htmlFor="auto-dumper" className="cursor-pointer">Auto Dumper</Label>
-                  <p className="text-xs text-muted-foreground">Automatically dump found data</p>
+            {/* AI is the product: make it visible, but still minimal */}
+            <div className="rounded-lg border bg-muted/20 p-4 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <IconSparkles className="size-4 text-muted-foreground" />
+                    <div className="text-sm font-medium">AI settings</div>
+                    <Badge variant="outline" className="bg-transparent text-[10px] font-mono">enabled</Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    SQLBot AI is always on for this product. Tune sensitivity and risk filtering below.
+                  </div>
                 </div>
               </div>
-              <Switch id="auto-dumper" checked={autoDumper} onCheckedChange={setAutoDumper} disabled={isCreating} />
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="ai-sensitivity" className="flex items-center gap-2">
+                    <IconAdjustments className="size-4 text-muted-foreground" />
+                    AI sensitivity
+                  </Label>
+                  <Select
+                    value={aiSensitivityLevel}
+                    onValueChange={(v) => setAiSensitivityLevel(v as "low" | "medium" | "high")}
+                    disabled={isCreating}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper" sideOffset={4}>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="text-xs text-muted-foreground">
+                    Higher sensitivity can increase findings but may cost more credits.
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-muted-foreground">Engines</Label>
+                  <div className="grid gap-2">
+                    <div className="flex items-start justify-between rounded-lg border bg-background p-3">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="response-drift" className="cursor-pointer text-sm flex items-center gap-2">
+                          <IconCpu className="size-4 text-muted-foreground" />
+                          Strategy engine
+                        </Label>
+                        <div className="text-xs text-muted-foreground">Adapts strategy based on responses.</div>
+                      </div>
+                      <Switch
+                        id="response-drift"
+                        checked={responsePatternDrift}
+                        onCheckedChange={setResponsePatternDrift}
+                        disabled={isCreating}
+                      />
+                    </div>
+
+                    <div className="flex items-start justify-between rounded-lg border bg-background p-3">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="structural-change" className="cursor-pointer text-sm flex items-center gap-2">
+                          <IconShieldCheck className="size-4 text-muted-foreground" />
+                          Evasion engine
+                        </Label>
+                        <div className="text-xs text-muted-foreground">Detects changes and reduces blocks.</div>
+                      </div>
+                      <Switch
+                        id="structural-change"
+                        checked={structuralChangeDetection}
+                        onCheckedChange={setStructuralChangeDetection}
+                        disabled={isCreating}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {autoDumper && (
-              <div className="space-y-2">
-                <Label htmlFor="preset" className="flex items-center gap-2">
-                  <IconDatabase className="size-3.5 text-muted-foreground" />
-                  Preset Format
-                </Label>
-                <Select value={preset} onValueChange={setPreset} disabled={isCreating}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select format" />
-                  </SelectTrigger>
-                  <SelectContent position="popper" sideOffset={4} className="max-h-[300px] overflow-y-auto">
-                    <SelectItem value="email:password">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">email:password</span>
-                    </SelectItem>
-                    <SelectItem value="username:password">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">username:password</span>
-                    </SelectItem>
-                    <SelectItem value="phone:password">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">phone:password</span>
-                    </SelectItem>
-                    <SelectItem value="email">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">email</span>
-                    </SelectItem>
-                    <SelectItem value="username">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">username</span>
-                    </SelectItem>
-                    <SelectItem value="phone">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">phone</span>
-                    </SelectItem>
-                    <SelectItem value="cc:cvv:exp">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">cc:cvv:exp</span>
-                    </SelectItem>
-                    <SelectItem value="name:cc:cvv:exp:address">
-                      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm">name:cc:cvv:exp:address</span>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">Data extraction format</p>
-              </div>
-            )}
-
-            <div className="space-y-4 rounded-lg border p-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-medium flex items-center gap-2">
-                  <IconBrain className="size-4 text-purple-500" />
-                  SQLBot AI Settings
-                </h4>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1.5 text-xs"
-                  type="button"
-                  onClick={() => window.open('https://docs.example.com', '_blank')}
-                >
-                  <IconBook className="size-3.5" />
-                  Docs
-                </Button>
-              </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="param-risk" className="flex items-center gap-2">
-                      <IconShield className="size-3.5 text-muted-foreground" />
-                      Parameter Risk Filtering
-                    </Label>
-                    <Select value={parameterRiskFilter} onValueChange={(v) => setParameterRiskFilter(v as "high" | "medium-high" | "all")} disabled={isCreating}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent position="popper" sideOffset={4}>
-                        <SelectItem value="high">High Risk Only</SelectItem>
-                        <SelectItem value="medium-high">Medium & High Risk</SelectItem>
-                        <SelectItem value="all">All Parameters</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="ai-sensitivity" className="flex items-center gap-2">
-                      <IconAdjustments className="size-3.5 text-muted-foreground" />
-                      AI Sensitivity Level
-                    </Label>
-                    <Select value={aiSensitivityLevel} onValueChange={(v) => setAiSensitivityLevel(v as "low" | "medium" | "high")} disabled={isCreating}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent position="popper" sideOffset={4}>
-                        <SelectItem value="low">Low</SelectItem>
-                        <SelectItem value="medium">Medium</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+            {/* General */}
+            <div className="rounded-lg border p-4 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="auto-dumper" className="cursor-pointer">Auto dumper</Label>
+                  <div className="text-xs text-muted-foreground">Automatically dump found data.</div>
                 </div>
+                <Switch id="auto-dumper" checked={autoDumper} onCheckedChange={setAutoDumper} disabled={isCreating} />
+              </div>
 
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <Label htmlFor="response-drift" className="cursor-pointer text-xs flex items-center gap-1.5">
-                      <IconCpu className="size-4 text-muted-foreground" />
-                      Strategy Engine
-                    </Label>
-                    <Switch id="response-drift" checked={responsePatternDrift} onCheckedChange={setResponsePatternDrift} disabled={isCreating} />
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <Label htmlFor="baseline-profiling" className="cursor-pointer text-xs flex items-center gap-1.5">
-                      <IconShield className="size-4 text-muted-foreground" />
-                      Risk Filter Engine
-                    </Label>
-                    <Switch id="baseline-profiling" checked={baselineProfiling} onCheckedChange={setBaselineProfiling} disabled={isCreating} />
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <Label htmlFor="structural-change" className="cursor-pointer text-xs flex items-center gap-1.5">
-                      <IconShieldCheck className="size-4 text-muted-foreground" />
-                      Evasion Engine
-                    </Label>
-                    <Switch id="structural-change" checked={structuralChangeDetection} onCheckedChange={setStructuralChangeDetection} disabled={isCreating} />
-                  </div>
+              {autoDumper && (
+                <div className="space-y-2">
+                  <Label htmlFor="preset">Preset format</Label>
+                  <Select value={preset} onValueChange={setPreset} disabled={isCreating}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select format" />
+                    </SelectTrigger>
+                    <SelectContent position="popper" sideOffset={4} className="max-h-[300px] overflow-y-auto">
+                      <SelectItem value="email:password">
+                        <span className="font-mono text-sm">email:password</span>
+                      </SelectItem>
+                      <SelectItem value="username:password">
+                        <span className="font-mono text-sm">username:password</span>
+                      </SelectItem>
+                      <SelectItem value="phone:password">
+                        <span className="font-mono text-sm">phone:password</span>
+                      </SelectItem>
+                      <SelectItem value="email">
+                        <span className="font-mono text-sm">email</span>
+                      </SelectItem>
+                      <SelectItem value="username">
+                        <span className="font-mono text-sm">username</span>
+                      </SelectItem>
+                      <SelectItem value="phone">
+                        <span className="font-mono text-sm">phone</span>
+                      </SelectItem>
+                      <SelectItem value="cc:cvv:exp">
+                        <span className="font-mono text-sm">cc:cvv:exp</span>
+                      </SelectItem>
+                      <SelectItem value="name:cc:cvv:exp:address">
+                        <span className="font-mono text-sm">name:cc:cvv:exp:address</span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-              </div>
+              )}
+            </div>
 
-            <div className="space-y-4 rounded-lg border p-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-medium flex items-center gap-2">
-                  <IconDatabase className="size-4 text-blue-500" />
-                  Injection Settings
-                </h4>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1.5 text-xs"
-                  type="button"
-                  onClick={() => window.open('https://docs.example.com', '_blank')}
-                >
-                  <IconBook className="size-3.5" />
-                  Docs
-                </Button>
-              </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox 
-                      id="injection-union" 
-                      checked={injectionUnion} 
-                      onCheckedChange={(checked) => setInjectionUnion(checked === true)} 
-                      disabled={isCreating}
-                    />
-                    <Label htmlFor="injection-union" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
-                      <IconGitMerge className="size-4 text-muted-foreground" />
-                      Union-based
-                    </Label>
-                  </div>
+            <Accordion
+              type="multiple"
+              value={createAdvanced}
+              onValueChange={(v) => setCreateAdvanced(v as string[])}
+              className="rounded-lg border px-4"
+            >
+              <AccordionItem value="ai-tuning">
+                <AccordionTrigger>Advanced: AI tuning</AccordionTrigger>
+                <AccordionContent>
+                  {createAdvanced.includes("ai-tuning") && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="param-risk">Parameter risk filtering</Label>
+                        <Select
+                          value={parameterRiskFilter}
+                          onValueChange={(v) => setParameterRiskFilter(v as "high" | "medium-high" | "all")}
+                          disabled={isCreating}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent position="popper" sideOffset={4}>
+                            <SelectItem value="high">High risk only</SelectItem>
+                            <SelectItem value="medium-high">Medium and high risk</SelectItem>
+                            <SelectItem value="all">All parameters</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                  <div className="flex items-center space-x-2">
-                    <Checkbox 
-                      id="injection-error" 
-                      checked={injectionError} 
-                      onCheckedChange={(checked) => setInjectionError(checked === true)} 
-                      disabled={isCreating}
-                    />
-                    <Label htmlFor="injection-error" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
-                      <IconAlertTriangle className="size-4 text-muted-foreground" />
-                      Error-based
-                    </Label>
-                  </div>
+                      <div className="flex items-start justify-between rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="baseline-profiling" className="cursor-pointer text-sm">Risk filter engine</Label>
+                          <div className="text-xs text-muted-foreground">Filters scans by risk level.</div>
+                        </div>
+                        <Switch
+                          id="baseline-profiling"
+                          checked={baselineProfiling}
+                          onCheckedChange={setBaselineProfiling}
+                          disabled={isCreating}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
 
-                  <div className="flex items-center space-x-2">
-                    <Checkbox 
-                      id="injection-boolean" 
-                      checked={injectionBoolean} 
-                      onCheckedChange={(checked) => setInjectionBoolean(checked === true)} 
-                      disabled={isCreating}
-                    />
-                    <Label htmlFor="injection-boolean" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
-                      <IconToggleLeft className="size-4 text-muted-foreground" />
-                      Boolean-based
-                    </Label>
-                  </div>
+              <AccordionItem value="injection">
+                <AccordionTrigger>Advanced: injection settings</AccordionTrigger>
+                <AccordionContent>
+                  {createAdvanced.includes("injection") && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="injection-union"
+                          checked={injectionUnion}
+                          onCheckedChange={(checked) => setInjectionUnion(checked === true)}
+                          disabled={isCreating}
+                        />
+                        <Label htmlFor="injection-union" className="cursor-pointer text-sm font-normal">
+                          Union-based
+                        </Label>
+                      </div>
 
-                  <div className="flex items-center space-x-2">
-                    <Checkbox 
-                      id="injection-timebased" 
-                      checked={injectionTimebased} 
-                      onCheckedChange={(checked) => setInjectionTimebased(checked === true)} 
-                      disabled={isCreating}
-                    />
-                    <Label htmlFor="injection-timebased" className="cursor-pointer text-sm font-normal flex items-center gap-1.5">
-                      <IconClock className="size-4 text-muted-foreground" />
-                      Time-based
-                    </Label>
-                  </div>
-                </div>
-              </div>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="injection-error"
+                          checked={injectionError}
+                          onCheckedChange={(checked) => setInjectionError(checked === true)}
+                          disabled={isCreating}
+                        />
+                        <Label htmlFor="injection-error" className="cursor-pointer text-sm font-normal">
+                          Error-based
+                        </Label>
+                      </div>
 
-            <div className="flex justify-end gap-2 pt-4">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="injection-boolean"
+                          checked={injectionBoolean}
+                          onCheckedChange={(checked) => setInjectionBoolean(checked === true)}
+                          disabled={isCreating}
+                        />
+                        <Label htmlFor="injection-boolean" className="cursor-pointer text-sm font-normal">
+                          Boolean-based
+                        </Label>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="injection-timebased"
+                          checked={injectionTimebased}
+                          onCheckedChange={(checked) => setInjectionTimebased(checked === true)}
+                          disabled={isCreating}
+                        />
+                        <Label htmlFor="injection-timebased" className="cursor-pointer text-sm font-normal">
+                          Time-based
+                        </Label>
+                      </div>
+                    </div>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+
+            <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" type="button" onClick={() => setShowCreateDialog(false)} disabled={isCreating}>
+                <IconX className="size-4" />
                 Cancel
               </Button>
               <Button type="submit" disabled={isCreating}>
@@ -1022,7 +1008,10 @@ export function TasksContent() {
                     Creating...
                   </>
                 ) : (
-                  "Create Task"
+                  <>
+                    <IconPlus className="size-4" />
+                    Create Task
+                  </>
                 )}
               </Button>
             </div>

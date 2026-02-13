@@ -133,8 +133,11 @@ export async function GET(
     const totalTime = Date.now() - startTime
     console.log(`[Avatar Proxy] ✅ Success - Total: ${totalTime}ms (DB: ${dbTime}ms, Download: ${downloadTime}ms, Sharp: ${sharpTime}ms)`)
 
+    // NextResponse expects a web Fetch BodyInit; copy Buffer into a Uint8Array to avoid SharedArrayBuffer typing.
+    const body = new Uint8Array(processedImage)
+
     // 返回处理后的图片
-    return new NextResponse(processedImage, {
+    return new NextResponse(body, {
       status: 200,
       headers: {
         ...CACHE_HEADERS,
