@@ -39,7 +39,6 @@ import {
 } from "@tanstack/react-table"
 
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -68,6 +67,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart"
+import {
   Table,
   TableBody,
   TableCell,
@@ -76,6 +81,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { toast } from "sonner"
+import { Cell, Pie, PieChart } from "recharts"
 
 // API Response Types
 interface UrlItem {
@@ -284,6 +290,33 @@ function getColumns(taskId: string): ColumnDef<TableRowData>[] {
     },
   ]
 }
+
+function formatCompact(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}K`
+  return value.toString()
+}
+
+function buildTrendPath(values: number[], width: number, height: number): string {
+  if (values.length === 0) return ""
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = Math.max(1, max - min)
+  return values
+    .map((v, i) => {
+      const x = (i / (values.length - 1)) * width
+      const y = height - ((v - min) / range) * height
+      return `${x},${y}`
+    })
+    .join(" ")
+}
+
+const categoryChartConfig = {
+  complete: { label: "Complete", color: "#10b981" },
+  dumping: { label: "Dumping", color: "#3b82f6" },
+  queue: { label: "Queue", color: "#f59e0b" },
+  failed: { label: "Failed", color: "#ef4444" },
+} satisfies ChartConfig
 
 export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const shortId = id.split("-")[0]
@@ -1383,8 +1416,52 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   })
 
   const progressPercent = progress?.target > 0 ? Math.round((progress.current / progress.target) * 100) : 0
-  const hasSummaryData = (progress?.target ?? 0) > 0 || totalItems > 0 || creditsUsed > 0
   const hasTableData = totalItems > 0
+  const websitesPerMinute = 0
+  const requestsPerMinute = 0
+  const trendWebsite: number[] = []
+  const trendRequest: number[] = []
+  const injectionRows = React.useMemo(() => {
+    if (hasTableData) {
+      return tableData.map((row) => ({
+        key: row.id,
+        domain: row.domain || "-",
+        country: row.country || "-",
+        category: row.type && row.type !== "-" ? row.type : "-",
+      }))
+    }
+    return []
+  }, [hasTableData, tableData])
+  const dumpRows = React.useMemo(() => {
+    if (hasTableData) {
+      return tableData.map((row) => ({
+        key: row.id,
+        domain: row.domain || "-",
+        rows: row.rows > 0 ? row.rows : 0,
+        status: row.status,
+      }))
+    }
+    return []
+  }, [hasTableData, tableData])
+  const wafDetected = React.useMemo(
+    () => dumpRows.filter((item) => item.status === "failed").length,
+    [dumpRows]
+  )
+  const categoryStats = React.useMemo(() => {
+    const complete = dumpRows.filter((item) => item.status === "complete").length
+    const dumping = dumpRows.filter((item) => item.status === "dumping").length
+    const queue = dumpRows.filter((item) => item.status === "queue").length
+    const failed = dumpRows.filter((item) => item.status === "failed").length
+    return [
+      { key: "complete", label: "Complete", value: complete, color: "#10b981" },
+      { key: "dumping", label: "Dumping", value: dumping, color: "#3b82f6" },
+      { key: "queue", label: "Queue", value: queue, color: "#f59e0b" },
+      { key: "failed", label: "Failed", value: failed, color: "#ef4444" },
+    ]
+  }, [dumpRows])
+  const categoryTotal = categoryStats.reduce((acc, item) => acc + item.value, 0)
+  const hasInjectionRows = injectionRows.length > 0
+  const hasDumpRows = dumpRows.length > 0
 
   if (isCheckingTask) {
     return (
@@ -1413,10 +1490,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   return (
     <>
-      <div className="flex flex-1 min-w-0 flex-col p-6 font-[family-name:var(--font-inter)]">
-        <div className="space-y-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0 space-y-2">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col p-6 font-[family-name:var(--font-inter)]">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex flex-col gap-4 pb-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <Link href="/tasks">
                   <Button variant="ghost" size="icon" className="size-8">
@@ -1461,33 +1538,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   </Badge>
                 )}
               </div>
-
-              {hasSummaryData && (
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <Card className="rounded-lg">
-                    <CardContent className="p-3">
-                      <p className="text-xs text-muted-foreground">Progress</p>
-                      <p className="font-mono text-sm">
-                        {progress?.target > 0
-                          ? `${(progress?.current ?? 0).toLocaleString()} / ${(progress?.target ?? 0).toLocaleString()}`
-                          : "-"}
-                      </p>
-                    </CardContent>
-                  </Card>
-                  <Card className="rounded-lg">
-                    <CardContent className="p-3">
-                      <p className="text-xs text-muted-foreground">Total URLs</p>
-                      <p className="font-mono text-sm">{totalItems.toLocaleString()}</p>
-                    </CardContent>
-                  </Card>
-                  <Card className="rounded-lg">
-                    <CardContent className="p-3">
-                      <p className="text-xs text-muted-foreground">Credits</p>
-                      <p className="font-mono text-sm">{formatCredits(creditsUsed)}</p>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -1524,84 +1574,286 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             </div>
           </div>
 
-          {progress?.target > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Progress</span>
-                <span className="font-mono text-muted-foreground">
-                  {progress?.current ?? 0} / {progress?.target ?? 0} ({progressPercent}%)
-                </span>
-              </div>
-              <Progress value={progressPercent} className="h-1.5" />
-            </div>
-          )}
-
-          {(isLoadingData || hasTableData) && (
-            <div className="border-y">
-              {isLoadingData ? (
-                <div className="flex h-64 items-center justify-center">
-                  <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
+          <div className="grid min-h-0 flex-1 border-y lg:grid-cols-[2fr_1fr]">
+              <div className="flex min-h-0 flex-col lg:border-r">
+                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
+                  <div className="space-y-3 p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Websites per minute</p>
+                        <p className="text-sm text-muted-foreground">Avg processed / min</p>
+                      </div>
+                      <p className="text-4xl font-semibold tracking-tight">{formatCompact(websitesPerMinute)}</p>
+                    </div>
+                    <svg viewBox="0 0 320 86" className="h-24 w-full">
+                      {trendWebsite.length > 0 && (
+                        <polyline
+                          points={buildTrendPath(trendWebsite, 320, 86)}
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          className="text-blue-500"
+                        />
+                      )}
+                    </svg>
+                  </div>
+                  <div className="space-y-3 p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Requests per minute</p>
+                        <p className="text-sm text-muted-foreground">Avg handled / min</p>
+                      </div>
+                      <p className="text-4xl font-semibold tracking-tight">{formatCompact(requestsPerMinute)}</p>
+                    </div>
+                    <svg viewBox="0 0 320 86" className="h-24 w-full">
+                      {trendRequest.length > 0 && (
+                        <polyline
+                          points={buildTrendPath(trendRequest, 320, 86)}
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          className="text-emerald-500"
+                        />
+                      )}
+                    </svg>
+                  </div>
                 </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    {table.getHeaderGroups().map((headerGroup) => (
-                      <TableRow key={headerGroup.id} className="bg-muted/30 hover:bg-muted/30">
-                        {headerGroup.headers.map((header) => (
-                          <TableHead key={header.id} className="text-xs font-medium text-muted-foreground">
-                            {header.isPlaceholder
-                              ? null
-                              : flexRender(header.column.columnDef.header, header.getContext())}
-                          </TableHead>
-                        ))}
-                      </TableRow>
-                    ))}
-                  </TableHeader>
-                  <TableBody>
-                    {table.getRowModel().rows?.length ? (
-                      table.getRowModel().rows.map((row) => (
-                        <TableRow key={row.id}>
-                          {row.getVisibleCells().map((cell) => (
-                            <TableCell key={cell.id}>
-                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))
-                    ) : null}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-          )}
 
-          {hasTableData && (
-            <div className="flex items-center justify-between py-1">
-              <div className="text-sm text-muted-foreground">
-                Page {currentPage} of {totalPages} ({totalItems} items)
+                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
+                  <div className="space-y-2 p-5">
+                    <p className="text-sm font-medium">Injected</p>
+                    <p className="text-sm text-muted-foreground">Injected links</p>
+                    <p className="pt-4 text-5xl font-semibold tracking-tight">{(progress?.current ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div className="space-y-2 p-5">
+                    <p className="text-sm font-medium">Dumped</p>
+                    <p className="text-sm text-muted-foreground">Dumped databases</p>
+                    <p className="pt-4 text-5xl font-semibold tracking-tight">
+                      {dumpRows.filter((row) => row.status === "complete").length.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
+                  <div className="space-y-2 p-5">
+                    <p className="text-sm font-medium">WAFDetected</p>
+                    <p className="text-sm text-muted-foreground">WAF-triggered fails</p>
+                    <p className="pt-4 text-5xl font-semibold tracking-tight">{wafDetected.toLocaleString()}</p>
+                  </div>
+                  <div className="space-y-3 p-5">
+                    <p className="text-sm font-medium">Category</p>
+                    <div className="flex items-center gap-5">
+                      <ChartContainer
+                        config={categoryChartConfig}
+                        className="h-24 w-24 shrink-0 !aspect-square"
+                      >
+                        <PieChart>
+                          <ChartTooltip
+                            cursor={false}
+                            content={<ChartTooltipContent hideLabel nameKey="key" />}
+                          />
+                          <Pie
+                            data={categoryStats}
+                            dataKey="value"
+                            nameKey="label"
+                            innerRadius={24}
+                            outerRadius={44}
+                            strokeWidth={1}
+                          >
+                            {categoryStats.map((item) => (
+                              <Cell key={item.key} fill={`var(--color-${item.key})`} />
+                            ))}
+                          </Pie>
+                        </PieChart>
+                      </ChartContainer>
+                      <div className="space-y-2">
+                        {categoryStats.map((item) => (
+                          <div key={item.key} className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
+                            <span>{item.label}</span>
+                            <span className="font-mono">
+                              {item.value}
+                              {categoryTotal > 0 ? ` (${Math.round((item.value / categoryTotal) * 100)}%)` : ""}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 p-5">
+                  <div className="flex items-center justify-between text-sm">
+                    <p className="font-medium">Progress</p>
+                    <p className="font-mono text-muted-foreground">
+                      {(progress?.current ?? 0).toLocaleString()} / {(progress?.target ?? 0).toLocaleString()}
+                    </p>
+                  </div>
+                  <Progress value={progressPercent} className="h-2" />
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{progressPercent}%</span>
+                    <span>ETA: {progressPercent >= 100 ? "00m 00s" : `${Math.max(1, Math.round((100 - progressPercent) * 0.9))}m`}</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => handlePageChange(currentPage - 1)}
-                  disabled={currentPage <= 1 || isLoadingData}
-                >
-                  <IconChevronLeft className="size-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="size-8"
-                  onClick={() => handlePageChange(currentPage + 1)}
-                  disabled={currentPage >= totalPages || isLoadingData}
-                >
-                  <IconChevronRight className="size-4" />
-                </Button>
+
+              <div className="grid min-h-0 grid-rows-[1fr_1fr] divide-y">
+                <section className="flex min-h-0 flex-col">
+                  <div className="border-b px-4 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <IconAdjustments className="size-4 text-muted-foreground" />
+                          <p className="text-base font-semibold tracking-tight">Injection</p>
+                          <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
+                            {injectionRows.length}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" className="size-7">
+                          <IconArrowsSort size={14} />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="size-7">
+                          <IconDownload size={14} />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    className={
+                      hasInjectionRows
+                        ? "dashboard-scroll h-[180px] overflow-auto"
+                        : "overflow-hidden"
+                    }
+                  >
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-transparent hover:bg-transparent">
+                          <TableHead>Domains</TableHead>
+                          <TableHead>Country</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead className="w-[40px]" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {hasInjectionRows ? (
+                          injectionRows.map((item) => (
+                            <TableRow key={item.key} className="hover:bg-transparent">
+                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
+                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
+                              <TableCell className="text-muted-foreground">{item.category}</TableCell>
+                              <TableCell>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="size-7">
+                                      <IconDotsVertical size={14} />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem>Open domain</DropdownMenuItem>
+                                    <DropdownMenuItem>Copy domain</DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={4} className="h-[120px]">
+                              <div className="flex flex-col items-center justify-center text-center py-4">
+                                <div className="mb-2 flex size-14 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25">
+                                  <IconWorld className="size-6 text-muted-foreground/60" strokeWidth={1.5} />
+                                </div>
+                                <h4 className="mb-0.5 text-sm font-semibold tracking-tight">No injection records</h4>
+                                <p className="max-w-[220px] text-xs text-muted-foreground">Run task to load records.</p>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </section>
+
+                <section className="flex min-h-0 flex-col">
+                  <div className="border-b px-4 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <IconBinaryTree className="size-4 text-muted-foreground" />
+                          <p className="text-base font-semibold tracking-tight">Dumps</p>
+                          <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
+                            {dumpRows.length}
+                          </Badge>
+                        </div>
+                      </div>
+                      <Button variant="ghost" size="icon" className="size-7">
+                        <IconDownload size={14} />
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    className={
+                      hasDumpRows
+                        ? "dashboard-scroll h-[180px] overflow-auto"
+                        : "overflow-hidden"
+                    }
+                  >
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-transparent hover:bg-transparent">
+                          <TableHead>Domains</TableHead>
+                          <TableHead>Rows</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="w-[40px]" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {hasDumpRows ? (
+                          dumpRows.map((item) => (
+                            <TableRow key={item.key} className="hover:bg-transparent">
+                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
+                              <TableCell className="font-mono text-muted-foreground">{formatCompact(item.rows)}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="bg-transparent text-xs text-muted-foreground">
+                                  {statusConfig[item.status].label}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="size-7">
+                                      <IconDotsVertical size={14} />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem>View details</DropdownMenuItem>
+                                    <DropdownMenuItem>Retry</DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={4} className="h-[120px]">
+                              <div className="flex flex-col items-center justify-center text-center py-4">
+                                <div className="mb-2 flex size-14 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25">
+                                  <IconBinaryTree className="size-6 text-muted-foreground/60" strokeWidth={1.5} />
+                                </div>
+                                <h4 className="mb-0.5 text-sm font-semibold tracking-tight">No dump records</h4>
+                                <p className="max-w-[220px] text-xs text-muted-foreground">Dump results appear here.</p>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </section>
               </div>
-            </div>
-          )}
+          </div>
         </div>
       </div>
 
