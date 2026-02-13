@@ -928,9 +928,8 @@ export function TasksContent() {
                           <Label htmlFor="payload-engine" className="cursor-pointer text-sm flex items-center gap-2">
                             <IconSparkles className="size-4 text-muted-foreground" />
                             Payload engine
-                            <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-amber-600 border-amber-300/70">Costs credits</Badge>
                           </Label>
-                          <div className="text-xs text-muted-foreground">Expands payload generation depth and variation.</div>
+                          <div className="text-xs text-muted-foreground">Expands payload generation depth and variation. No credits cost.</div>
                         </div>
                         <Switch
                           id="payload-engine"
