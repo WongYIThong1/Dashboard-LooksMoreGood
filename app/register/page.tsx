@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -464,9 +465,9 @@ export default function RegisterPage() {
 
               <p className="text-center text-sm text-muted-foreground">
                 Already have an account?{" "}
-                <a href="/login" className="text-foreground underline underline-offset-4 hover:text-primary">
+                <Link href="/login" prefetch className="text-foreground underline underline-offset-4 hover:text-primary">
                   Sign in
-                </a>
+                </Link>
               </p>
             </form>
           </CardContent>

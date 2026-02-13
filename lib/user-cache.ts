@@ -1,8 +1,12 @@
 // 用户信息缓存工具
 
 interface CachedUserInfo {
+  id?: string
   username: string
   email: string
+  plan?: string
+  avatarUrl?: string | null
+  avatarHash?: string | null
   cachedAt: number
 }
 
@@ -30,14 +34,25 @@ export function getCachedUserInfo(): CachedUserInfo | null {
   }
 }
 
-export function setCachedUserInfo(username: string, email: string): void {
+export function setCachedUserInfo(data: {
+  id?: string
+  username: string
+  email: string
+  plan?: string
+  avatarUrl?: string | null
+  avatarHash?: string | null
+}): void {
   try {
-    const data: CachedUserInfo = {
-      username,
-      email,
+    const payload: CachedUserInfo = {
+      id: data.id,
+      username: data.username,
+      email: data.email,
+      plan: data.plan,
+      avatarUrl: data.avatarUrl ?? null,
+      avatarHash: data.avatarHash ?? null,
       cachedAt: Date.now(),
     }
-    localStorage.setItem(CACHE_KEY, JSON.stringify(data))
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
   } catch (error) {
     console.error('Failed to cache user info:', error)
   }

@@ -2,28 +2,35 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
 // GET - 获取用户的所有文件
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url)
+    const typeFilter = searchParams.get('type')
+    const minimal = searchParams.get('minimal') === '1'
+
     const supabase = await createClient()
     
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     
     if (authError || !user) {
-      console.error('Auth error in GET /api/files:', authError)
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
       )
     }
 
-    console.log('Fetching files for user:', user.id)
-
     // 获取用户文件列表
-    const { data: files, error: filesError } = await supabase
+    let filesQuery = supabase
       .from('user_files')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
+
+    if (typeFilter) {
+      filesQuery = filesQuery.eq('file_type', typeFilter)
+    }
+
+    const { data: files, error: filesError } = await filesQuery
 
     if (filesError) {
       console.error('Files fetch error:', filesError)
@@ -33,7 +40,16 @@ export async function GET() {
       )
     }
 
-    console.log('Files fetched:', files?.length || 0)
+    if (minimal) {
+      return NextResponse.json({
+        files: (files || []).map(file => ({
+          id: file.id,
+          name: file.filename,
+          type: file.file_type,
+          modified: file.updated_at,
+        })),
+      })
+    }
 
     // 获取存储配额信息
     const { data: profile, error: profileError } = await supabase
@@ -49,8 +65,6 @@ export async function GET() {
         { status: 500 }
       )
     }
-
-    console.log('Storage info:', profile)
 
     return NextResponse.json({
       files: (files || []).map(file => ({

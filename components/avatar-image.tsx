@@ -14,6 +14,9 @@ interface AvatarImageProps {
   className?: string
 }
 
+// Session-level cache to avoid repeated preload work when switching pages.
+const loadedAvatarKeys = new Set<string>()
+
 export function AvatarImageComponent({
   userId,
   avatarUrl,
@@ -87,6 +90,17 @@ export function AvatarImageComponent({
 
         // 3. 构建 Image Proxy URL（路径级别的缓存）
         const proxyUrl = buildProxyUrl(userId, targetSize)
+        const imageKey = `${userId}:${avatarHash || "nohash"}:${targetSize}`
+
+        // Fast path: already loaded in this session, reuse immediately.
+        if (loadedAvatarKeys.has(imageKey) && isMounted) {
+          setImageSrc(proxyUrl)
+          setShowThumbnail(false)
+          setIsLoading(false)
+          setImageError(false)
+          return
+        }
+
         console.log(`[AvatarImage] 📡 Fetching from proxy: ${proxyUrl}`)
 
         // 4. 加载完整图片
@@ -103,6 +117,7 @@ export function AvatarImageComponent({
               setShowThumbnail(false)
               setIsLoading(false)
               setImageError(false)
+              loadedAvatarKeys.add(imageKey)
               resolve()
             }
           }

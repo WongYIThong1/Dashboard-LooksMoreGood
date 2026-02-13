@@ -13,7 +13,6 @@ import {
   IconSortDescending,
   IconLoader2,
   IconUpload,
-  IconCloudUpload,
   IconX,
   IconPencil,
   IconShield,
@@ -29,12 +28,10 @@ import {
 } from "@tanstack/react-table"
 
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import {
   Select,
   SelectContent,
@@ -94,17 +91,13 @@ interface ApiFile {
   modified: string
 }
 
-interface FilesResponse {
-  files: ApiFile[]
-  storage_used: number
-  storage_max: number
-}
-
 const ALLOWED_EXTENSION = ".txt"
 
 export function FilesContent() {
   const [isLoading, setIsLoading] = React.useState(true)
   const [filesData, setFilesData] = React.useState<FileData[]>([])
+  const [query, setQuery] = React.useState("")
+  const [typeFilter, setTypeFilter] = React.useState<"all" | "urls" | "data">("all")
   const [storageUsed, setStorageUsed] = React.useState(0)
   const [storageMax, setStorageMax] = React.useState(0)
   const [pagination, setPagination] = React.useState({
@@ -117,7 +110,6 @@ export function FilesContent() {
   const [isDragging, setIsDragging] = React.useState(false)
   const [selectedFile, setSelectedFile] = React.useState<File | null>(null)
   const [isUploading, setIsUploading] = React.useState(false)
-  const [uploadProgress, setUploadProgress] = React.useState(0)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const [showRenameDialog, setShowRenameDialog] = React.useState(false)
   const [renameOldName, setRenameOldName] = React.useState("")
@@ -130,13 +122,9 @@ export function FilesContent() {
   const [fileToDelete, setFileToDelete] = React.useState<string | null>(null)
   const [showBatchDeleteDialog, setShowBatchDeleteDialog] = React.useState(false)
   const [isBatchDeleting, setIsBatchDeleting] = React.useState(false)
+  const hasLoadedOnceRef = React.useRef(false)
 
-  React.useEffect(() => {
-    fetchFiles()
-    fetchUserInfo()
-  }, [])
-
-  const fetchUserInfo = async () => {
+  const fetchUserInfo = React.useCallback(async () => {
     try {
       const response = await fetch('/api/settings', {
         method: 'GET',
@@ -150,7 +138,7 @@ export function FilesContent() {
     } catch (error) {
       console.error('Failed to fetch user info:', error)
     }
-  }
+  }, [])
 
   // 检查是否可以上传
   const canUpload = (): { allowed: boolean; reason?: string } => {
@@ -172,8 +160,10 @@ export function FilesContent() {
     return { allowed: true }
   }
 
-  const fetchFiles = async () => {
-    setIsLoading(true)
+  const fetchFiles = React.useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? false
+    const shouldBlockUi = !silent && !hasLoadedOnceRef.current
+    if (shouldBlockUi) setIsLoading(true)
     try {
       const response = await fetch('/api/files', {
         method: 'GET',
@@ -185,11 +175,16 @@ export function FilesContent() {
         throw new Error(data.error || 'Failed to fetch files')
       }
 
-      const data = await response.json()
+      const data = (await response.json()) as {
+        files?: ApiFile[]
+        storage_used?: number
+        storage_limit?: number
+        storage_max?: number
+      }
       console.log('Files data:', data)
 
       // 更新文件列表
-      const formattedFiles: FileData[] = (data.files || []).map((file: any) => ({
+      const formattedFiles: FileData[] = (data.files || []).map((file) => ({
         id: file.id,
         name: file.name,
         size: formatFileSize(file.size),
@@ -209,13 +204,46 @@ export function FilesContent() {
       
       setStorageUsed(usedBytes)
       setStorageMax(totalBytes)
+      hasLoadedOnceRef.current = true
     } catch (error) {
       console.error('Failed to fetch files:', error)
-      toast.error(error instanceof Error ? error.message : "Please Try Again")
+      if (!silent) {
+        toast.error(error instanceof Error ? error.message : "Please Try Again")
+      }
     } finally {
-      setIsLoading(false)
+      if (shouldBlockUi) setIsLoading(false)
     }
-  }
+  }, [])
+
+  React.useEffect(() => {
+    void fetchFiles({ silent: false })
+    void fetchUserInfo()
+  }, [fetchFiles, fetchUserInfo])
+
+  React.useEffect(() => {
+    // Avoid landing on empty pages after filtering/searching.
+    setPagination((p) => ({ ...p, pageIndex: 0 }))
+  }, [query, typeFilter])
+
+  React.useEffect(() => {
+    // Silent background refresh: keep storage + list fresh without visible loading UI.
+    const tick = () => void fetchFiles({ silent: true })
+
+    const intervalId = window.setInterval(tick, 25_000)
+    const onFocus = () => tick()
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick()
+    }
+
+    window.addEventListener("focus", onFocus)
+    document.addEventListener("visibilitychange", onVisibility)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener("focus", onFocus)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [fetchFiles])
 
   const handleDownload = async (fileName: string) => {
     try {
@@ -417,47 +445,53 @@ export function FilesContent() {
   {
     accessorKey: "name",
     header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") column.toggleSorting(column.getIsSorted() === "asc")
+        }}
+        className="inline-flex items-center gap-1 select-none hover:text-foreground"
       >
-        Name
+        <span>Name</span>
         {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
+          <IconSortAscending size={14} className="opacity-80" />
         ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
+          <IconSortDescending size={14} className="opacity-80" />
         ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
+          <IconArrowsSort size={14} className="opacity-50" />
         )}
-      </Button>
+      </div>
     ),
     cell: ({ row }) => (
       <div className="flex items-center gap-2">
         <IconFile size={16} className="text-muted-foreground" />
-        <span className="font-medium font-[family-name:var(--font-inter)]">{row.getValue("name")}</span>
+        <span className="font-medium">{row.getValue("name")}</span>
       </div>
     ),
   },
   {
     accessorKey: "size",
     header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") column.toggleSorting(column.getIsSorted() === "asc")
+        }}
+        className="inline-flex items-center gap-1 select-none hover:text-foreground"
       >
-        Size
+        <span>Size</span>
         {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
+          <IconSortAscending size={14} className="opacity-80" />
         ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
+          <IconSortDescending size={14} className="opacity-80" />
         ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
+          <IconArrowsSort size={14} className="opacity-50" />
         )}
-      </Button>
+      </div>
     ),
     cell: ({ row }) => (
       <span className="font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
@@ -469,27 +503,30 @@ export function FilesContent() {
   {
     accessorKey: "type",
     header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") column.toggleSorting(column.getIsSorted() === "asc")
+        }}
+        className="inline-flex items-center gap-1 select-none hover:text-foreground"
       >
-        Type
+        <span>Type</span>
         {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
+          <IconSortAscending size={14} className="opacity-80" />
         ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
+          <IconSortDescending size={14} className="opacity-80" />
         ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
+          <IconArrowsSort size={14} className="opacity-50" />
         )}
-      </Button>
+      </div>
     ),
     cell: ({ row }) => {
       const type = row.getValue("type") as string
       const displayType = type === "urls" ? "URLs" : type === "data" ? "Data" : type.toUpperCase()
       return (
-        <span className="text-muted-foreground font-[family-name:var(--font-inter)]">
+        <span className="text-muted-foreground">
           {displayType}
         </span>
       )
@@ -498,21 +535,24 @@ export function FilesContent() {
   {
     accessorKey: "lines",
     header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") column.toggleSorting(column.getIsSorted() === "asc")
+        }}
+        className="inline-flex items-center gap-1 select-none hover:text-foreground"
       >
-        Lines
+        <span>Lines</span>
         {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
+          <IconSortAscending size={14} className="opacity-80" />
         ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
+          <IconSortDescending size={14} className="opacity-80" />
         ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
+          <IconArrowsSort size={14} className="opacity-50" />
         )}
-      </Button>
+      </div>
     ),
     cell: ({ row }) => {
       const lines = row.getValue("lines") as number | null
@@ -526,21 +566,24 @@ export function FilesContent() {
   {
     accessorKey: "modified",
     header: ({ column }) => (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-3 h-8"
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") column.toggleSorting(column.getIsSorted() === "asc")
+        }}
+        className="inline-flex items-center gap-1 select-none hover:text-foreground"
       >
-        Modified
+        <span>Modified</span>
         {column.getIsSorted() === "asc" ? (
-          <IconSortAscending size={14} className="ml-1" />
+          <IconSortAscending size={14} className="opacity-80" />
         ) : column.getIsSorted() === "desc" ? (
-          <IconSortDescending size={14} className="ml-1" />
+          <IconSortDescending size={14} className="opacity-80" />
         ) : (
-          <IconArrowsSort size={14} className="ml-1 opacity-50" />
+          <IconArrowsSort size={14} className="opacity-50" />
         )}
-      </Button>
+      </div>
     ),
     cell: ({ row }) => {
       const modifiedDate = row.getValue("modified") as string
@@ -573,7 +616,7 @@ export function FilesContent() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem 
-              className="text-red-500"
+              className="text-destructive focus:text-destructive"
               onClick={() => handleDeleteClick(fileName)}
             >
               <IconTrash size={14} className="mr-2" />
@@ -598,19 +641,6 @@ function formatStorageSize(bytes: number): string {
   const safeBytes = Math.max(0, Number(bytes) || 0)
   const gb = safeBytes / (1024 * 1024 * 1024)
   return `${gb.toFixed(2)} GB`
-}
-
-function getFileType(mimeType: string): string {
-  const typeMap: Record<string, string> = {
-    "application/pdf": "PDF",
-    "text/csv": "CSV",
-    "application/json": "JSON",
-    "text/plain": "TXT",
-    "text/html": "HTML",
-    "application/sql": "SQL",
-    "text/sql": "SQL",
-  }
-  return typeMap[mimeType] || mimeType.split("/")[1]?.toUpperCase() || "FILE"
 }
 
   function formatDate(dateString: string): string {
@@ -718,15 +748,6 @@ function getFileType(mimeType: string): string {
     }
 
     setIsUploading(true)
-    setUploadProgress(0)
-
-    // 模拟真实的上传进度
-    const progressInterval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 90) return prev // 在 90% 停止，等待真实完成
-        return prev + Math.random() * 15 // 随机增加 0-15%
-      })
-    }, 300)
 
     try {
       const formData = new FormData()
@@ -744,8 +765,6 @@ function getFileType(mimeType: string): string {
         body: formData,
       })
 
-      clearInterval(progressInterval)
-
       if (!response.ok) {
         const data = await response.json()
         console.error('Upload error response:', data)
@@ -755,24 +774,19 @@ function getFileType(mimeType: string): string {
       const data = await response.json()
       console.log('Upload success:', data)
 
-      setUploadProgress(100)
       toast.success(`Uploaded successfully (${data.lines} lines)`)
       
-      // 延迟关闭对话框，让用户看到 100%
       setTimeout(() => {
         setSelectedFile(null)
         setShowUploadDialog(false)
-        fetchFiles()
-      }, 500)
+        void fetchFiles({ silent: true })
+      }, 250)
     } catch (error) {
-      clearInterval(progressInterval)
       console.error('Upload error:', error)
       const errorMessage = error instanceof Error ? error.message : "Failed to upload file"
       toast.error(errorMessage)
     } finally {
-      clearInterval(progressInterval)
       setIsUploading(false)
-      setUploadProgress(0)
     }
   }
 
@@ -784,8 +798,17 @@ function getFileType(mimeType: string): string {
     }
   }
 
+  const filteredData = React.useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return filesData.filter((f) => {
+      const typeOk = typeFilter === "all" ? true : f.type === typeFilter
+      const queryOk = q.length === 0 ? true : f.name.toLowerCase().includes(q)
+      return typeOk && queryOk
+    })
+  }, [filesData, query, typeFilter])
+
   const table = useReactTable({
-    data: filesData,
+    data: filteredData,
     columns,
     state: {
       pagination,
@@ -806,6 +829,8 @@ function getFileType(mimeType: string): string {
     ? Math.min(100, Math.max(0, (storageUsed / storageMax) * 100))
     : 0
 
+  const remainingBytes = Math.max(0, storageMax - storageUsed)
+
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -816,59 +841,98 @@ function getFileType(mimeType: string): string {
 
   return (
     <div className="flex flex-1 flex-col min-w-0 p-6 font-[family-name:var(--font-inter)]">
-      {/* Header with Upload Button */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Files</h1>
-        <Button 
-          onClick={() => {
-            const check = canUpload()
-            if (!check.allowed) {
-              toast.error(check.reason || 'Upload not allowed')
-              return
-            }
-            setShowUploadDialog(true)
-          }}
-          disabled={!canUpload().allowed}
-        >
-          <IconUpload size={16} className="mr-2" />
-          Upload
-        </Button>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 space-y-2">
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold tracking-tight">Files</h1>
+            <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
+              <span>{formatStorageSize(storageUsed)}</span>
+              <span>/</span>
+              <span>{formatStorageSize(storageMax)}</span>
+              <span className="text-muted-foreground/70">({formatStorageSize(remainingBytes)} left)</span>
+            </div>
+          </div>
+          <div className="max-w-[520px]">
+            <Progress value={usagePercent} className="h-1.5" />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => {
+              const check = canUpload()
+              if (!check.allowed) {
+                toast.error(check.reason || 'Upload not allowed')
+                return
+              }
+              setShowUploadDialog(true)
+            }}
+            variant={canUpload().allowed ? "default" : "outline"}
+            className="motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out hover:-translate-y-[1px] active:translate-y-0"
+          >
+            <IconUpload size={16} className="mr-2" />
+            Upload
+          </Button>
+          {!canUpload().allowed && (
+            <div className="hidden sm:block text-xs text-muted-foreground max-w-[220px] text-right">
+              Upgrade your plan to upload.
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Storage Card */}
-      <Card className="rounded-xl mb-6">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-6">
-              <div>
-                <p className="text-sm text-muted-foreground">Used</p>
-                <p className="text-lg font-semibold font-[family-name:var(--font-jetbrains-mono)]">
-                  {formatStorageSize(storageUsed)}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Total</p>
-                <p className="text-lg font-semibold font-[family-name:var(--font-jetbrains-mono)]">
-                  {formatStorageSize(storageMax)}
-                </p>
-              </div>
-            </div>
-            <span className="text-sm text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
-              {usagePercent.toFixed(1)}%
-            </span>
+      {/* Toolbar */}
+      <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-1 items-center gap-2">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search files..."
+            className="max-w-[420px]"
+          />
+          <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as "all" | "urls" | "data")}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Type" />
+            </SelectTrigger>
+            <SelectContent position="popper" sideOffset={4}>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="data">Data</SelectItem>
+              <SelectItem value="urls">URLs</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="hidden md:block text-xs text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
+            {filteredData.length} file{filteredData.length === 1 ? "" : "s"}
           </div>
-          <Progress value={usagePercent} className="h-2" />
-        </CardContent>
-      </Card>
+        </div>
+
+        {table.getSelectedRowModel().rows.length > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
+            <div className="text-sm">
+              <span className="font-medium">{table.getSelectedRowModel().rows.length}</span>{" "}
+              <span className="text-muted-foreground">selected</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setRowSelection({})}>
+                Clear
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => setShowBatchDeleteDialog(true)}>
+                <IconTrash size={16} className="mr-2" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Files Table */}
-      <div className="rounded-lg border overflow-hidden">
+      <div className="mt-4 border-y">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="bg-muted/50">
+              <TableRow key={headerGroup.id} className="bg-muted/30">
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
+                  <TableHead key={header.id} className="h-10 text-xs font-medium text-muted-foreground">
                     {header.isPlaceholder
                       ? null
                       : flexRender(
@@ -898,7 +962,7 @@ function getFileType(mimeType: string): string {
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="h-[450px]"
+                  className="h-[420px]"
                 >
                   <div className="flex flex-col items-center justify-center text-center py-12">
                     {/* Icon */}
@@ -919,6 +983,7 @@ function getFileType(mimeType: string): string {
                       <Button 
                         onClick={() => setShowUploadDialog(true)}
                         size="sm"
+                        className="motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out hover:-translate-y-[1px] active:translate-y-0"
                       >
                         <IconUpload size={16} className="mr-2" />
                         Upload File
@@ -940,8 +1005,14 @@ function getFileType(mimeType: string): string {
       {/* Pagination */}
       <div className="flex items-center justify-between py-4">
         <div className="text-sm text-muted-foreground">
-          {table.getFilteredSelectedRowModel().rows.length} of{" "}
-          {table.getFilteredRowModel().rows.length} file(s) selected
+          Page{" "}
+          <span className="font-[family-name:var(--font-jetbrains-mono)] text-foreground">
+            {table.getState().pagination.pageIndex + 1}
+          </span>{" "}
+          of{" "}
+          <span className="font-[family-name:var(--font-jetbrains-mono)] text-foreground">
+            {table.getPageCount()}
+          </span>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -965,37 +1036,6 @@ function getFileType(mimeType: string): string {
         </div>
       </div>
 
-      {/* Batch Actions Floating Bar */}
-      {table.getSelectedRowModel().rows.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-5">
-          <div className="flex items-center gap-3 rounded-lg border bg-background px-4 py-3 shadow-lg">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="font-medium">
-                {table.getSelectedRowModel().rows.length} selected
-              </span>
-            </div>
-            <Separator orientation="vertical" className="h-6" />
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setRowSelection({})}
-              >
-                Clear
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowBatchDeleteDialog(true)}
-              >
-                <IconTrash size={16} className="mr-2" />
-                Delete
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Upload Dialog */}
       <Dialog open={showUploadDialog} onOpenChange={handleCloseUploadDialog}>
         <DialogContent className="sm:max-w-[500px]">
@@ -1018,50 +1058,21 @@ function getFileType(mimeType: string): string {
 
             {!selectedFile ? (
               <>
-                {/* File Type Selection */}
+                {/* File Type */}
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">File Type</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setFileType("data")}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
-                        fileType === "data"
-                          ? "border-primary bg-accent"
-                          : "border-input hover:bg-accent hover:text-accent-foreground"
-                      }`}
-                    >
-                      <IconFile size={18} className={fileType === "data" ? "text-primary" : "text-muted-foreground"} />
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">Data</p>
-                        <p className="text-xs text-muted-foreground">Text data</p>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setFileType("urls")}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
-                        fileType === "urls"
-                          ? "border-primary bg-accent"
-                          : "border-input hover:bg-accent hover:text-accent-foreground"
-                      }`}
-                    >
-                      <svg 
-                        className={`size-[18px] ${fileType === "urls" ? "text-primary" : "text-muted-foreground"}`}
-                        fill="none" 
-                        viewBox="0 0 24 24" 
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                      </svg>
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">URLs</p>
-                        <p className="text-xs text-muted-foreground">Web links</p>
-                      </div>
-                    </button>
-                  </div>
+                  <Label className="text-sm font-medium">File type</Label>
+                  <Select value={fileType} onValueChange={(v) => setFileType(v as "urls" | "data")} disabled={isUploading}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper" sideOffset={4}>
+                      <SelectItem value="data">Data</SelectItem>
+                      <SelectItem value="urls">URLs</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Use <span className="font-medium text-foreground">URLs</span> for target lists, <span className="font-medium text-foreground">Data</span> for text payloads.
+                  </p>
                 </div>
 
                 {/* Drop zone */}
@@ -1086,7 +1097,7 @@ function getFileType(mimeType: string): string {
                         {isDragging ? "Drop file here" : "Choose file or drag & drop"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        .txt files only (max 5GB)
+                        .txt files only
                       </p>
                     </div>
                   </div>
@@ -1128,9 +1139,14 @@ function getFileType(mimeType: string): string {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">Uploading</span>
-                      <span className="font-medium">{Math.round(uploadProgress)}%</span>
+                      <span className="inline-flex items-center gap-2 font-medium">
+                        <IconLoader2 size={16} className="animate-spin" />
+                        Working...
+                      </span>
                     </div>
-                    <Progress value={uploadProgress} className="h-2" />
+                    <div className="h-2 rounded-full bg-muted">
+                      <div className="h-2 w-1/2 rounded-full bg-foreground/15" />
+                    </div>
                   </div>
                 )}
               </>
@@ -1249,7 +1265,8 @@ function getFileType(mimeType: string): string {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete file</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete <span className="font-medium text-foreground">"{fileToDelete}"</span>? This action cannot be undone.
+              Are you sure you want to delete{" "}
+              <span className="font-medium text-foreground">&quot;{fileToDelete}&quot;</span>? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

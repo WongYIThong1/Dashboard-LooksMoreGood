@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Suspense } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -352,9 +353,9 @@ function LoginForm() {
 
               <p className="text-center text-sm text-muted-foreground">
                 Don&apos;t have an account?{" "}
-                <a href="/register" className="text-foreground underline underline-offset-4 hover:text-primary">
+                <Link href="/register" prefetch className="text-foreground underline underline-offset-4 hover:text-primary">
                   Sign up
-                </a>
+                </Link>
               </p>
             </form>
           </CardContent>

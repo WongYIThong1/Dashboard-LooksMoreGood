@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   ChevronsUpDown,
@@ -98,10 +99,12 @@ export function NavUser() {
         const cached = getCachedUserInfo()
         if (cached) {
           setUser({
-            id: '', // ID 不需要缓存
+            id: cached.id || '',
             username: cached.username,
             email: cached.email,
-            plan: 'Free', // plan 不缓存，默认显示 Free
+            plan: cached.plan || 'Free',
+            avatarUrl: cached.avatarUrl,
+            avatarHash: cached.avatarHash,
           })
           setIsLoadingUser(false)
         }
@@ -132,8 +135,15 @@ export function NavUser() {
             avatarHash: profile?.avatar_hash,
           })
 
-          // 只缓存 username 和 email
-          setCachedUserInfo(username, email)
+          // 缓存用于跨页面快速回显，后台再静默刷新
+          setCachedUserInfo({
+            id: user.id,
+            username,
+            email,
+            plan,
+            avatarUrl: profile?.avatar_url,
+            avatarHash: profile?.avatar_hash,
+          })
         } else {
           console.warn('User not authenticated')
           clearCachedUserInfo()
@@ -362,10 +372,10 @@ export function NavUser() {
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuItem asChild>
-                  <a href="/settings">
+                  <Link href="/settings" prefetch>
                     <Settings />
                     Settings
-                  </a>
+                  </Link>
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />

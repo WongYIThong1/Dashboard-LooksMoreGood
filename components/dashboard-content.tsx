@@ -28,7 +28,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getCachedUserInfo } from "@/lib/user-cache"
+import { getCachedUserInfo, setCachedUserInfo } from "@/lib/user-cache"
 
 const leaderboardData = [
   { rank: 1, username: "Alice", score: 28470 },
@@ -91,6 +91,12 @@ export function DashboardContent() {
 
           const fetchedUsername = profile?.username || user.email?.split('@')[0] || 'User'
           setUsername(fetchedUsername)
+          setCachedUserInfo({
+            id: user.id,
+            username: fetchedUsername,
+            email: user.email || 'user@example.com',
+            plan: 'Free',
+          })
         }
       } catch (error) {
         console.error('Failed to fetch username:', error)

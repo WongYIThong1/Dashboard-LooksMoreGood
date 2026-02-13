@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -54,10 +55,10 @@ export function NavMain({
                 </SidebarMenuButton>
               ) : (
                 <SidebarMenuButton asChild isActive={item.isActive}>
-                  <a href={item.url}>
+                  <Link href={item.url} prefetch>
                     <item.icon className="size-4" />
                     <span>{item.title}</span>
-                  </a>
+                  </Link>
                 </SidebarMenuButton>
               )}
             </SidebarMenuItem>

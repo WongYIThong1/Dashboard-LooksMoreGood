@@ -270,17 +270,19 @@ export function TasksContent() {
   }, [showCreateDialog])
 
   // AI Settings
-  const [parameterRiskFilter, setParameterRiskFilter] = React.useState<"high" | "medium-high" | "all">("medium-high")
   const [responsePatternDrift, setResponsePatternDrift] = React.useState(true)
-  const [baselineProfiling, setBaselineProfiling] = React.useState(true)
   const [structuralChangeDetection, setStructuralChangeDetection] = React.useState(false)
   const [aiSensitivityLevel, setAiSensitivityLevel] = React.useState<"low" | "medium" | "high">("medium")
+  const [antiBanEngine, setAntiBanEngine] = React.useState(false)
+  const [payloadEngine, setPayloadEngine] = React.useState(false)
+  const antiBanAvailable = false
 
   // Injection Settings
   const [injectionUnion, setInjectionUnion] = React.useState(true)
   const [injectionError, setInjectionError] = React.useState(true)
   const [injectionBoolean, setInjectionBoolean] = React.useState(false)
   const [injectionTimebased, setInjectionTimebased] = React.useState(false)
+  const hasLoadedFilesRef = React.useRef(false)
 
   React.useEffect(() => {
     fetchTasks()
@@ -289,14 +291,16 @@ export function TasksContent() {
   // Fetch files when dialog opens
   React.useEffect(() => {
     if (showCreateDialog) {
-      fetchFiles()
+      if (!hasLoadedFilesRef.current) {
+        fetchFiles()
+      }
     }
   }, [showCreateDialog])
 
   const fetchFiles = async () => {
     setIsLoadingFiles(true)
     try {
-      const response = await fetch('/api/files', {
+      const response = await fetch('/api/files?type=urls&minimal=1', {
         method: 'GET',
       })
 
@@ -306,13 +310,10 @@ export function TasksContent() {
         throw new Error(data.error || 'Failed to fetch files')
       }
 
-      // 只显示 type 为 "urls" 的文件
-      const urlsFiles = (data.files || [])
-        .filter((file: UrlsFile) => file.type === 'urls')
-        .map((file: UrlsFile) => ({ id: file.id, name: file.name }))
+      const urlsFiles = (data.files || []).map((file: UrlsFile) => ({ id: file.id, name: file.name }))
       
-      console.log('Loaded URLs files:', urlsFiles)
       setAvailableFiles(urlsFiles)
+      hasLoadedFilesRef.current = true
     } catch (error) {
       console.error('Failed to load files:', error)
       toast.error("Please Try Again")
@@ -349,11 +350,11 @@ export function TasksContent() {
           auto_dumper: autoDumper,
           preset: preset || null,
           ai_mode: true,
-          parameter_risk_filter: parameterRiskFilter,
           ai_sensitivity_level: aiSensitivityLevel,
           response_pattern_drift: responsePatternDrift,
-          baseline_profiling: baselineProfiling,
           structural_change_detection: structuralChangeDetection,
+          anti_ban_engine: antiBanAvailable ? antiBanEngine : false,
+          payload_engine: payloadEngine,
           injection_union: injectionUnion,
           injection_error: injectionError,
           injection_boolean: injectionBoolean,
@@ -382,11 +383,11 @@ export function TasksContent() {
       setSelectedFileId("")
       setAutoDumper(false)
       setPreset("")
-      setParameterRiskFilter("medium-high")
       setResponsePatternDrift(true)
-      setBaselineProfiling(true)
       setStructuralChangeDetection(false)
       setAiSensitivityLevel("medium")
+      setAntiBanEngine(false)
+      setPayloadEngine(false)
       setInjectionUnion(true)
       setInjectionError(true)
       setInjectionBoolean(false)
@@ -437,12 +438,15 @@ export function TasksContent() {
   const fetchTasks = async () => {
     setIsLoading(true)
     try {
-      // Fetch user settings (plan and max_tasks)
-      const settingsResponse = await fetch('/api/settings', {
-        method: 'GET',
-      })
-
-      const settingsData = await settingsResponse.json()
+      // Run in parallel to reduce initial page wait time.
+      const [settingsResponse, tasksResponse] = await Promise.all([
+        fetch('/api/settings', { method: 'GET' }),
+        fetch('/api/v1/tasks', { method: 'GET' }),
+      ])
+      const [settingsData, tasksData] = await Promise.all([
+        settingsResponse.json(),
+        tasksResponse.json(),
+      ])
 
       if (!settingsResponse.ok) {
         throw new Error(settingsData.error || 'Failed to fetch user info')
@@ -451,13 +455,6 @@ export function TasksContent() {
       // 设置用户计划和任务限制
       setUserPlan(settingsData.plan || 'Free')
       setMaxTasks(settingsData.max_tasks || 0)
-
-      // Fetch tasks from API
-      const tasksResponse = await fetch('/api/v1/tasks', {
-        method: 'GET',
-      })
-
-      const tasksData = await tasksResponse.json()
 
       if (!tasksResponse.ok) {
         throw new Error(tasksData.error || 'Failed to fetch tasks')
@@ -715,8 +712,8 @@ export function TasksContent() {
 
       {/* Create Task Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="sm:max-w-[720px] max-h-[85vh] overflow-y-auto scrollbar-hide">
-          <DialogHeader className="flex-row items-start justify-between">
+        <DialogContent className="sm:max-w-[720px] max-h-[85vh] overflow-y-auto scrollbar-hide data-[state=open]:duration-200">
+          <DialogHeader className="flex-row items-start justify-between motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-reduce:animate-none">
             <div className="space-y-1 text-left">
               <DialogTitle>Create new task</DialogTitle>
               <DialogDescription>Configure settings and start scanning.</DialogDescription>
@@ -733,7 +730,10 @@ export function TasksContent() {
             </Button>
           </DialogHeader>
           
-          <form onSubmit={handleCreateTask} className="space-y-6 py-4">
+          <form
+            onSubmit={handleCreateTask}
+            className="space-y-6 py-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-reduce:animate-none"
+          >
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="task-name">Task name</Label>
@@ -775,7 +775,7 @@ export function TasksContent() {
                     <Badge variant="outline" className="bg-transparent text-[10px] font-mono">enabled</Badge>
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    SQLBot AI is always on for this product. Tune sensitivity and risk filtering below.
+                    SQLBot AI is always on. Strategy + Evasion are the core engines, then use AI tuning for extra power.
                   </div>
                 </div>
               </div>
@@ -810,9 +810,10 @@ export function TasksContent() {
                   <div className="grid gap-2">
                     <div className="flex items-start justify-between rounded-lg border bg-background p-3">
                       <div className="space-y-0.5">
-                        <Label htmlFor="response-drift" className="cursor-pointer text-sm flex items-center gap-2">
+                        <Label htmlFor="response-drift" className="cursor-pointer text-sm flex items-center gap-2 flex-wrap">
                           <IconCpu className="size-4 text-muted-foreground" />
-                          Strategy engine
+                          <span className="whitespace-nowrap">Strategy Engine</span>
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">Recommended</Badge>
                         </Label>
                         <div className="text-xs text-muted-foreground">Adapts strategy based on responses.</div>
                       </div>
@@ -826,11 +827,13 @@ export function TasksContent() {
 
                     <div className="flex items-start justify-between rounded-lg border bg-background p-3">
                       <div className="space-y-0.5">
-                        <Label htmlFor="structural-change" className="cursor-pointer text-sm flex items-center gap-2">
+                        <Label htmlFor="structural-change" className="cursor-pointer text-sm flex items-center gap-2 flex-wrap">
                           <IconShieldCheck className="size-4 text-muted-foreground" />
-                          Evasion engine
+                          <span className="whitespace-nowrap">Evasion Engine</span>
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-medium">Recommended</Badge>
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-amber-600 border-amber-300/70">Costs credits</Badge>
                         </Label>
-                        <div className="text-xs text-muted-foreground">Detects changes and reduces blocks.</div>
+                        <div className="text-xs text-muted-foreground">Smarter WAF bypass with stronger evasion capability. This engine consumes credits when enabled.</div>
                       </div>
                       <Switch
                         id="structural-change"
@@ -903,33 +906,36 @@ export function TasksContent() {
                 <AccordionContent>
                   {createAdvanced.includes("ai-tuning") && (
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="param-risk">Parameter risk filtering</Label>
-                        <Select
-                          value={parameterRiskFilter}
-                          onValueChange={(v) => setParameterRiskFilter(v as "high" | "medium-high" | "all")}
-                          disabled={isCreating}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent position="popper" sideOffset={4}>
-                            <SelectItem value="high">High risk only</SelectItem>
-                            <SelectItem value="medium-high">Medium and high risk</SelectItem>
-                            <SelectItem value="all">All parameters</SelectItem>
-                          </SelectContent>
-                        </Select>
+                      <div className="flex items-start justify-between rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="anti-ban-engine" className="cursor-pointer text-sm flex items-center gap-2">
+                            <IconShield className="size-4 text-muted-foreground" />
+                            AntiBan engine
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Currently unavailable</Badge>
+                          </Label>
+                          <div className="text-xs text-muted-foreground">Temporarily unavailable in current version.</div>
+                        </div>
+                        <Switch
+                          id="anti-ban-engine"
+                          checked={antiBanEngine}
+                          onCheckedChange={setAntiBanEngine}
+                          disabled
+                        />
                       </div>
 
                       <div className="flex items-start justify-between rounded-lg border p-3">
                         <div className="space-y-0.5">
-                          <Label htmlFor="baseline-profiling" className="cursor-pointer text-sm">Risk filter engine</Label>
-                          <div className="text-xs text-muted-foreground">Filters scans by risk level.</div>
+                          <Label htmlFor="payload-engine" className="cursor-pointer text-sm flex items-center gap-2">
+                            <IconSparkles className="size-4 text-muted-foreground" />
+                            Payload engine
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-amber-600 border-amber-300/70">Costs credits</Badge>
+                          </Label>
+                          <div className="text-xs text-muted-foreground">Expands payload generation depth and variation.</div>
                         </div>
                         <Switch
-                          id="baseline-profiling"
-                          checked={baselineProfiling}
-                          onCheckedChange={setBaselineProfiling}
+                          id="payload-engine"
+                          checked={payloadEngine}
+                          onCheckedChange={setPayloadEngine}
                           disabled={isCreating}
                         />
                       </div>
@@ -942,7 +948,8 @@ export function TasksContent() {
                 <AccordionTrigger>Advanced: injection settings</AccordionTrigger>
                 <AccordionContent>
                   {createAdvanced.includes("injection") && (
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-4">
                       <div className="flex items-center space-x-2">
                         <Checkbox
                           id="injection-union"
@@ -974,8 +981,9 @@ export function TasksContent() {
                           onCheckedChange={(checked) => setInjectionBoolean(checked === true)}
                           disabled={isCreating}
                         />
-                        <Label htmlFor="injection-boolean" className="cursor-pointer text-sm font-normal">
+                        <Label htmlFor="injection-boolean" className="cursor-pointer text-sm font-normal inline-flex items-center gap-2">
                           Boolean-based
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-amber-600 border-amber-300/70">Costs credits</Badge>
                         </Label>
                       </div>
 
@@ -986,10 +994,15 @@ export function TasksContent() {
                           onCheckedChange={(checked) => setInjectionTimebased(checked === true)}
                           disabled={isCreating}
                         />
-                        <Label htmlFor="injection-timebased" className="cursor-pointer text-sm font-normal">
+                        <Label htmlFor="injection-timebased" className="cursor-pointer text-sm font-normal inline-flex items-center gap-2">
                           Time-based
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-amber-600 border-amber-300/70">Costs credits</Badge>
                         </Label>
                       </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Boolean-based and Time-based checks consume extra credits when enabled.
+                    </p>
                     </div>
                   )}
                 </AccordionContent>
