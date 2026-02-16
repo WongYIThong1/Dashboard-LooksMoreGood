@@ -2,12 +2,10 @@
 
 import * as React from "react"
 import {
-  IconDashboard,
   IconChecklist,
   IconKey,
   IconHistory,
   IconFolder,
-  IconInnerShadowTop,
   IconBook,
   IconUsers,
   IconMessageCircle,
@@ -32,7 +30,7 @@ const data = {
     {
       title: "Dashboard",
       url: "/dashboard",
-      icon: IconDashboard,
+      icon: DashboardIcon,
     },
   ],
   navWorkplace: [
@@ -91,6 +89,24 @@ const data = {
   ],
 }
 
+function DashboardIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="m2.25 12l8.955-8.955a1.124 1.124 0 0 1 1.59 0L21.75 12" />
+      <path d="M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+    </svg>
+  )
+}
+
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
@@ -102,8 +118,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               className="data-[slot=sidebar-menu-button]:!p-1.5"
             >
               <a href="#">
-                <IconInnerShadowTop className="!size-5" />
-                <span className="text-base font-semibold">Acme Inc.</span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  className="!size-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 8V4H8" />
+                  <rect width="16" height="12" x="4" y="8" rx="2" />
+                  <path d="M2 14h2m16 0h2m-7-1v2m-6-2v2" />
+                </svg>
+                <span className="text-base font-semibold">SQLBots</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>

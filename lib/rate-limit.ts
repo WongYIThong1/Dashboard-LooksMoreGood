@@ -1,84 +1,79 @@
-// 服务器端速率限制 - 使用 Supabase 数据库
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from "@/lib/supabase/client"
 
 const RATE_LIMITS = {
   login: {
     maxAttempts: 5,
-    windowMinutes: 15, // 15分钟
+    windowMinutes: 15,
   },
   register: {
     maxAttempts: 3,
-    windowMinutes: 60, // 1小时
+    windowMinutes: 60,
   },
-}
+} as const
 
-// 获取客户端标识符（使用浏览器指纹 + IP 的组合）
 function getClientIdentifier(): string {
-  if (typeof window === 'undefined') return 'server'
-  
-  // 创建简单的浏览器指纹
+  if (typeof window === "undefined") return "server"
+
   const fingerprint = [
     navigator.userAgent,
     navigator.language,
     screen.width,
     screen.height,
     new Date().getTimezoneOffset(),
-  ].join('|')
-  
-  // 使用简单的哈希函数
+  ].join("|")
+
   let hash = 0
-  for (let i = 0; i < fingerprint.length; i++) {
+  for (let i = 0; i < fingerprint.length; i += 1) {
     const char = fingerprint.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
-    hash = hash & hash
+    hash = (hash << 5) - hash + char
+    hash |= 0
   }
-  
+
   return `client_${Math.abs(hash).toString(36)}`
 }
 
 export async function checkRateLimit(
-  action: 'login' | 'register'
+  action: "login" | "register"
 ): Promise<{ allowed: boolean; remainingTime?: number }> {
   try {
     const supabase = createClient()
     const config = RATE_LIMITS[action]
     const identifier = getClientIdentifier()
 
-    const { data, error } = await supabase.rpc('check_rate_limit', {
+    const { data, error } = await supabase.rpc("check_rate_limit", {
       p_identifier: identifier,
       p_action: action,
       p_max_attempts: config.maxAttempts,
       p_window_minutes: config.windowMinutes,
     })
 
-    if (error) {
-      console.error('Rate limit check error:', error)
-      return { allowed: true } // 如果出错，允许继续（fail open）
-    }
-
-    if (!data) {
-      return { allowed: true }
+    if (error || !data) {
+      console.error("Rate limit check error:", error)
+      return { allowed: false, remainingTime: 1 }
     }
 
     return {
-      allowed: data.allowed,
-      remainingTime: data.remaining_minutes,
+      allowed: Boolean(data.allowed),
+      remainingTime:
+        typeof data.remaining_minutes === "number" ? data.remaining_minutes : 1,
     }
   } catch (error) {
-    console.error('Rate limit check error:', error)
-    return { allowed: true } // 如果出错，允许继续
+    console.error("Rate limit check error:", error)
+    return { allowed: false, remainingTime: 1 }
   }
 }
 
-// 不再需要单独的 recordAttempt 函数，因为 checkRateLimit 会自动记录
-export async function recordAttempt(action: 'login' | 'register'): Promise<void> {
-  // 这个函数现在是空的，因为 checkRateLimit 已经记录了尝试
-  // 保留这个函数是为了向后兼容
+export async function recordAttempt(
+  _action: "login" | "register"
+): Promise<void> {
+  void _action
   return Promise.resolve()
 }
 
-export async function resetRateLimit(action: 'login' | 'register'): Promise<void> {
-  // 服务器端的速率限制会自动过期，不需要手动重置
-  // 保留这个函数是为了向后兼容
+export async function resetRateLimit(
+  _action: "login" | "register"
+): Promise<void> {
+  void _action
   return Promise.resolve()
 }
+

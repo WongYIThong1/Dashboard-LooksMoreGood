@@ -502,7 +502,33 @@ function formatEta(seconds: number): string {
   return `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`
 }
 
+function getHttpErrorMessage(
+  status: number,
+  fallback: string,
+  options?: { forbiddenMessage?: string }
+): string {
+  if (status === 400 || status === 422) return "Invalid request data"
+  if (status === 401) return "Please login again"
+  if (status === 403) return options?.forbiddenMessage || "Permission denied"
+  if (status === 404) return "Resource not found"
+  if (status === 409) return "Operation conflict. Please refresh and retry"
+  if (status === 429) return "Too many requests. Please try again later"
+  if (status >= 500) return "Server error. Please try again later"
+  return fallback
+}
+
 export function TaskDetailContent({ id }: TaskDetailContentProps) {
+  type TaskStatus = "pending" | "running_recon" | "running" | "paused" | "complete" | "failed"
+  const normalizeTaskStatus = React.useCallback((value: unknown): TaskStatus => {
+    const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
+    if (raw === "running_recon" || raw === "recon_running") return "running_recon"
+    if (raw === "running" || raw === "in_progress" || raw === "processing") return "running"
+    if (raw === "paused") return "paused"
+    if (raw === "complete" || raw === "completed" || raw === "done" || raw === "success") return "complete"
+    if (raw === "failed" || raw === "error") return "failed"
+    return "pending"
+  }, [])
+
   const shortId = id.split("-")[0]
   const INJECTION_WINDOW_LIMIT = 1000
   const INJECTION_PREFETCH_LIMIT = 50
@@ -520,7 +546,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [isLoadingData, setIsLoadingData] = React.useState(true)
   const [isCheckingTask, setIsCheckingTask] = React.useState(true)
   const [taskNotFound, setTaskNotFound] = React.useState(false)
-  const [taskStatus, setTaskStatus] = React.useState<"pending" | "running_recon" | "running" | "paused" | "complete" | "failed">("pending")
+  const [taskStatus, setTaskStatus] = React.useState<TaskStatus>("pending")
   const [progress, setProgress] = React.useState({ target: 0, current: 0 })
   const [creditsUsed, setCreditsUsed] = React.useState(0)
   const [fileId, setFileId] = React.useState<string>("")
@@ -718,6 +744,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   const [isStarting, setIsStarting] = React.useState(false)
   const [isDownloadingInjection, setIsDownloadingInjection] = React.useState(false)
+  const [injectionSortOrder, setInjectionSortOrder] = React.useState<"asc" | "desc">("desc")
+  const [dumpSortOrder, setDumpSortOrder] = React.useState<"asc" | "desc">("desc")
   const [dumpUploadState, setDumpUploadState] = React.useState<"idle" | "uploading" | "done" | "failed">("idle")
   const [dumpUploadRequestId, setDumpUploadRequestId] = React.useState<string | null>(null)
   const [showStartLoader, setShowStartLoader] = React.useState(false)
@@ -1134,8 +1162,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 		      try {
 		        const token = await getAccessToken()
 		        if (!token) return
-		        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-		        const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+		        const snapshotUrl = new URL(`/api/external/task/${id}/snapshot`, window.location.origin)
 		        snapshotUrl.searchParams.set("include_items", "0")
 		        console.log("[Snapshot] ➡️ stats-only request:", snapshotUrl.toString())
 		        const response = await fetch(snapshotUrl.toString(), {
@@ -1171,7 +1198,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       // Update UI with cached data
       setTaskName(cachedTask.name || '')
       setListsFile(cachedTask.file_name || '')
-      setTaskStatus(cachedTask.status || 'pending')
+      const cachedStatus = normalizeTaskStatus(cachedTask.status)
+      setTaskStatus(cachedStatus)
       setProgress(prev => ({ ...prev, target: cachedTask.target || 0 }))
       setCreditsUsed(cachedTask.credits_used || 0)
       setFileId(cachedTask.file_id || '')
@@ -1194,7 +1222,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setIsLoadingData(false)
       
       // Handle status-based actions
-      if (cachedTask.status === 'running_recon') {
+      if (cachedStatus === "running_recon") {
         const hasCachedData = loadCachedStats()
         if (!hasCachedData) {
           console.log('[TaskDetail] ℹ️ No cached stats data')
@@ -1204,7 +1232,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         if (shouldConnectSSE) {
           setTimeout(() => connectSSE(), 500)
         }
-      } else if (cachedTask.status === 'running') {
+      } else if (cachedStatus === "running") {
         console.log('[TaskDetail] ▶️ Task is running (from cache), connecting SSE')
         if (shouldConnectSSE) {
           setTimeout(() => connectSSE(), 500)
@@ -1243,10 +1271,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         cache: 'no-store',
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Please Try Again')
+      if (!response.ok || !data?.success) {
+        throw new Error(getHttpErrorMessage(response.status, "Please Try Again"))
       }
 
       const task = data.data
@@ -1256,7 +1284,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       // 更新任务基本信息
       setTaskName(task.name || '')
       setListsFile(task.file_name || '')
-      setTaskStatus(task.status || 'pending')
+      const normalizedStatus = normalizeTaskStatus(task.status)
+      setTaskStatus(normalizedStatus)
       setProgress(prev => ({ ...prev, target: task.target || 0 }))
       setCreditsUsed(task.credits_used || 0)
       setFileId(task.file_id || '')
@@ -1278,7 +1307,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setTimeBased(task.time_based ?? false)
 
       // 检查任务状态，如果是 running_recon，自动打开 loader 并连接 SSE
-      if (task.status === 'running_recon') {
+      if (normalizedStatus === "running_recon") {
         console.log('[TaskDetail] 🔄 Task is running_recon, auto-opening loader')
         
         // 先尝试从缓存加载数据
@@ -1298,7 +1327,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             connectSSE()
           }, 500)
         }
-      } else if (task.status === 'running') {
+      } else if (normalizedStatus === "running") {
         // 如果是 running 状态，不打开 loader，只连接 SSE
         console.log('[TaskDetail] ▶️ Task is running, connecting SSE without loader')
         if (shouldConnectSSE) {
@@ -1306,7 +1335,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             connectSSE()
           }, 500)
         }
-      } else if (task.status === 'complete' || task.status === 'failed') {
+      } else if (normalizedStatus === "complete" || normalizedStatus === "failed") {
         // 任务完成或失败，清除所有缓存
         clearCachedStats()
         clearCachedTaskInfo()
@@ -1512,8 +1541,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       }
       console.log('[SSE] ✅ Access token obtained')
 
-      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-      const sseUrlBuilder = new URL(`${externalApiDomain}/sse/${id}`)
+      const sseUrlBuilder = new URL(`/api/external/sse/${id}`, window.location.origin)
       // Resume with query param for widest compatibility (no custom CORS header required).
       if (lastEventIdRef.current) sseUrlBuilder.searchParams.set("since", lastEventIdRef.current)
       const sseUrl = sseUrlBuilder.toString()
@@ -2029,10 +2057,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         cache: 'no-store',
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Please Try Again')
+      if (!response.ok || !data?.success) {
+        throw new Error(getHttpErrorMessage(response.status, "Please Try Again"))
       }
 
       const task = data.data
@@ -2075,13 +2103,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         },
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
-      if (!response.ok || !data.success) {
-        const errorMessage = data.error === 'Failed to generate download URL' 
-          ? 'Please try again later' 
-          : (data.error || 'Failed to start task')
-        toast.error(errorMessage)
+      if (!response.ok || !data?.success) {
+        toast.error(getHttpErrorMessage(response.status, "Failed to start task"))
         return
       }
 
@@ -2201,9 +2226,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      })
 
 	      if (!response.ok) {
-	        const data = await response.json().catch(() => null)
-	        const msg = data?.error || data?.message || `Failed to download (HTTP ${response.status})`
-	        throw new Error(msg)
+	        throw new Error(getHttpErrorMessage(response.status, "Failed to download"))
 	      }
 
         const blob = await response.blob()
@@ -2239,8 +2262,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setDumpUploadRequestId(null)
       activeDumpRequestIdRef.current = null
 
-      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-      const response = await fetch(`${externalApiDomain}/download/dump/${id}`, {
+      const response = await fetch(`/api/external/download/dump/${id}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -2252,8 +2274,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const requestId = data?.request_id || null
 
       if (response.status !== 202 || !requestId) {
-        const msg = data?.error || data?.message || `Failed to start dump upload (HTTP ${response.status})`
-        throw new Error(msg)
+        throw new Error(getHttpErrorMessage(response.status, "Failed to start dump upload"))
       }
 
       activeDumpRequestIdRef.current = requestId
@@ -2280,8 +2301,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         return
       }
 
-      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-      const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+      const snapshotUrl = new URL(`/api/external/task/${id}/snapshot`, window.location.origin)
       snapshotUrl.searchParams.set("include_items", "1")
       snapshotUrl.searchParams.set("limit", String(INJECTION_PREFETCH_LIMIT))
 
@@ -2373,8 +2393,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const token = await getAccessToken()
       if (!token) return
 
-      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-      const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+      const snapshotUrl = new URL(`/api/external/task/${id}/snapshot`, window.location.origin)
       snapshotUrl.searchParams.set("include_items", "1")
       snapshotUrl.searchParams.set("limit", "100")
       snapshotUrl.searchParams.set("cursor", cursor)
@@ -2519,10 +2538,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         }),
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || 'Failed to save settings')
+      if (!response.ok || !data?.success) {
+        throw new Error(getHttpErrorMessage(response.status, "Failed to save settings"))
       }
 
       toast.success("Settings saved successfully")
@@ -2544,10 +2563,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         credentials: 'include',
       })
 
-      const dbData = await dbResponse.json()
+      const dbData = await dbResponse.json().catch(() => null)
+      const deleteSucceeded =
+        dbResponse.ok && (dbResponse.status === 204 || dbData?.success !== false)
 
-      if (!dbResponse.ok || !dbData.success) {
-        throw new Error(dbData.message || 'Failed to delete task')
+      if (!deleteSucceeded) {
+        throw new Error(getHttpErrorMessage(dbResponse.status, "Failed to delete task"))
       }
       
       toast.success("Task deleted successfully")
@@ -2621,6 +2642,23 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      waf: false,
 	    }))
 	  }, [sseInjectionRows, tableData])
+  const sortedInjectionRows = React.useMemo(() => {
+    const rows = [...injectionRows]
+    rows.sort((a, b) => {
+      const leftCategory = (a.category || "-").toLowerCase()
+      const rightCategory = (b.category || "-").toLowerCase()
+      const categoryCmp =
+        injectionSortOrder === "asc"
+          ? leftCategory.localeCompare(rightCategory)
+          : rightCategory.localeCompare(leftCategory)
+      if (categoryCmp !== 0) return categoryCmp
+
+      const leftDomain = (a.domain || "-").toLowerCase()
+      const rightDomain = (b.domain || "-").toLowerCase()
+      return leftDomain.localeCompare(rightDomain)
+    })
+    return rows
+  }, [injectionRows, injectionSortOrder])
 	  const dumpRows = React.useMemo(() => {
       if (sseDumpRows.length > 0) return sseDumpRows
 	    return tableData.map((row) => ({
@@ -2634,6 +2672,16 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      percentDone: row.status === "complete" ? 100 : 0,
 	    }))
 	  }, [sseDumpRows, tableData])
+  const sortedDumpRows = React.useMemo(() => {
+    const rows = [...dumpRows]
+    rows.sort((a, b) => {
+      if (a.rows !== b.rows) {
+        return dumpSortOrder === "asc" ? a.rows - b.rows : b.rows - a.rows
+      }
+      return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+    })
+    return rows
+  }, [dumpRows, dumpSortOrder])
   const wafDetected = sseWafDetected
 	  const categoryColorMap = React.useMemo(
 	    () => ({
@@ -2682,6 +2730,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	  const showStatsSkeleton = !statsHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
 	  const showInjectionSkeleton = !injectionHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
 	  const showDumpsSkeleton = !dumpsHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
+	  const isStartDisabled =
+	    isStarting || taskStatus === "running" || taskStatus === "running_recon" || taskStatus === "complete"
 	  const skeletonRowKeys = React.useMemo(() => Array.from({ length: 5 }, (_, idx) => `sk-${idx}`), [])
 
 	  if (isCheckingTask) {
@@ -2777,13 +2827,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 size="icon"
                 className="size-8"
                 onClick={handleStart}
-                disabled={
-                  isStarting ||
-                  taskStatus === "running" ||
-                  taskStatus === "running_recon" ||
-                  taskStatus === "complete" ||
-                  taskStatus === "failed"
-                }
+                disabled={isStartDisabled}
+                title={isStartDisabled ? "Task is running or completed" : "Start task"}
               >
                 {isStarting ? <IconLoader2 size={14} className="animate-spin" /> : <IconPlayerPlay size={14} />}
               </Button>
@@ -3020,8 +3065,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 		                          <span className="text-[10px] font-mono text-muted-foreground">
 		                            {sseUiStatus === "connected"
 		                              ? "Live"
-		                              : sseUiStatus === "connecting"
-		                                ? "Connecting…"
 	                                : sseUiStatus === "error"
 	                                  ? "Offline"
 	                                  : "Idle"}
@@ -3029,7 +3072,13 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                        </div>
 	                      </div>
 	                      <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="icon" className="size-7">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7"
+                          onClick={() => setInjectionSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
+                          title={injectionSortOrder === "asc" ? "Sort Z-A" : "Sort A-Z"}
+                        >
                           <IconArrowsSort size={14} />
                         </Button>
                         <Button
@@ -3089,7 +3138,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                            </TableRow>
 	                          ))
 		                        ) : hasInjectionRows ? (
-		                          injectionRows.map((item) => (
+		                          sortedInjectionRows.map((item) => (
 		                            <TableRow key={item.key} className="hover:bg-transparent">
 		                              <TableCell className="font-medium">
 		                                <div className="flex min-w-0 items-center gap-2">
@@ -3139,7 +3188,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 		                                ) : (
 		                                  <span>All history loaded</span>
 		                                )}
-		                                <span className="font-mono">{injectionRows.length.toLocaleString()} shown</span>
+		                                <span className="font-mono">{sortedInjectionRows.length.toLocaleString()} shown</span>
 		                              </div>
 		                            </TableCell>
 		                          </TableRow>
@@ -3189,27 +3238,33 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                           ) : dumpUploadState === "done" ? (
                             <span className="text-[10px] font-mono text-emerald-500">Done</span>
                           ) : null}
-                          {dumpUploadRequestId ? (
-                            <span className="text-[10px] font-mono text-muted-foreground/80">
-                              {dumpUploadRequestId.slice(0, 8)}
-                            </span>
-                          ) : null}
                         </div>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-7"
-                        onClick={handleUploadDump}
-                        disabled={dumpUploadState === "uploading"}
-                        title={dumpUploadState === "failed" ? "Retry upload" : "Upload and download dump"}
-                      >
-                        {dumpUploadState === "uploading" ? (
-                          <IconLoader2 size={14} className="animate-spin" />
-                        ) : (
-                          <IconDownload size={14} />
-                        )}
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7"
+                          onClick={() => setDumpSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
+                          title={dumpSortOrder === "asc" ? "Rows high to low" : "Rows low to high"}
+                        >
+                          <IconArrowsSort size={14} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7"
+                          onClick={handleUploadDump}
+                          disabled={dumpUploadState === "uploading"}
+                          title={dumpUploadState === "failed" ? "Retry upload" : "Upload and download dump"}
+                        >
+                          {dumpUploadState === "uploading" ? (
+                            <IconLoader2 size={14} className="animate-spin" />
+                          ) : (
+                            <IconDownload size={14} />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
 	                  <div
@@ -3251,7 +3306,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                            </TableRow>
 	                          ))
 	                        ) : hasDumpRows ? (
-	                          dumpRows.map((item) => (
+	                          sortedDumpRows.map((item) => (
 	                            <TableRow key={item.key} className="hover:bg-transparent">
 	                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
 	                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
@@ -3378,8 +3433,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                         <SelectItem value="email"><span className="font-mono text-sm">email</span></SelectItem>
                         <SelectItem value="username"><span className="font-mono text-sm">username</span></SelectItem>
                         <SelectItem value="phone"><span className="font-mono text-sm">phone</span></SelectItem>
-                        <SelectItem value="cc:cvv:exp"><span className="font-mono text-sm">cc:cvv:exp</span></SelectItem>
-                        <SelectItem value="name:cc:cvv:exp:address"><span className="font-mono text-sm">name:cc:cvv:exp:address</span></SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -3544,7 +3597,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           
           <div className="py-4 space-y-3">
             <div className="flex items-start gap-3 text-sm">
-              <div className="mt-0.5">•</div>
+              <div className="mt-0.5">&middot;</div>
               <div>
                 <span className="font-medium">Task: </span>
                 <span className="text-muted-foreground">{taskName || 'Unnamed Task'}</span>
@@ -3584,3 +3637,4 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     </>
   )
 }
+

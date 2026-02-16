@@ -188,6 +188,21 @@ function formatEtaLabel(totalSeconds: number): string {
   return `${mins}m ${secs}s`
 }
 
+function getHttpErrorMessage(
+  status: number,
+  fallback: string,
+  options?: { forbiddenMessage?: string }
+): string {
+  if (status === 400 || status === 422) return "Invalid request data"
+  if (status === 401) return "Please login again"
+  if (status === 403) return options?.forbiddenMessage || "Permission denied"
+  if (status === 404) return "Resource not found"
+  if (status === 409) return "Operation conflict. Please refresh and retry"
+  if (status === 429) return "Too many requests. Please try again later"
+  if (status >= 500) return "Server error. Please try again later"
+  return fallback
+}
+
 function EtaCountdown({ etaSeconds, status }: { etaSeconds: number; status: TaskStatus }) {
   const [displaySeconds, setDisplaySeconds] = React.useState(Math.max(0, Math.trunc(etaSeconds || 0)))
 
@@ -327,12 +342,14 @@ export function TasksContent() {
   const [availableFiles, setAvailableFiles] = React.useState<UrlsFile[]>([])
   const [isLoadingFiles, setIsLoadingFiles] = React.useState(false)
   const [isCreating, setIsCreating] = React.useState(false)
+  const [isDeleting, setIsDeleting] = React.useState(false)
   const [taskName, setTaskName] = React.useState("")
   const [selectedFileId, setSelectedFileId] = React.useState("")
   const [preset, setPreset] = React.useState("")
   const [query, setQuery] = React.useState("")
   const [statusFilter, setStatusFilter] = React.useState<"all" | UiStatus>("all")
   const [createAdvanced, setCreateAdvanced] = React.useState<string[]>([])
+  const [deleteTargetTask, setDeleteTargetTask] = React.useState<Task | null>(null)
   const aiMode = true
   const [userSseReconnectNonce, setUserSseReconnectNonce] = React.useState(0)
 
@@ -417,9 +434,9 @@ export function TasksContent() {
     const fetchSettings = async () => {
       try {
         const response = await fetch("/api/settings", { method: "GET" })
-        const data = await response.json()
+        const data = await response.json().catch(() => null)
         if (!response.ok) {
-          throw new Error(data.error || "Failed to fetch user info")
+          throw new Error(getHttpErrorMessage(response.status, "Failed to fetch user info"))
         }
         setUserPlan(data.plan || "Free")
         setMaxTasks(data.max_tasks || 0)
@@ -448,11 +465,11 @@ export function TasksContent() {
         method: 'GET',
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch files')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to fetch files"))
       }
+
+      const data = await response.json()
 
       const urlsFiles = (data.files || []).map((file: UrlsFile) => ({ id: file.id, name: file.name }))
       
@@ -551,8 +568,7 @@ export function TasksContent() {
           return
         }
 
-        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-        const url = new URL(`${externalApiDomain}/sse/user`)
+        const url = new URL("/api/external/sse/user", window.location.origin)
         if (userLastEventIdRef.current) {
           url.searchParams.set("since", userLastEventIdRef.current)
         }
@@ -670,19 +686,14 @@ export function TasksContent() {
         }),
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
-      if (!response.ok || !data.success) {
-        // 处理特定的错误代码
-        if (response.status === 403) {
-          const errorCode = data.code
-          if (errorCode === 'FREE_PLAN_LIMIT') {
-            throw new Error('Free plan users cannot create tasks. Please upgrade your plan.')
-          } else if (errorCode === 'TASK_LIMIT_REACHED') {
-            throw new Error(data.message || 'Task limit reached. Please delete some tasks or upgrade your plan.')
-          }
-        }
-        throw new Error(data.message || 'Failed to create task')
+      if (!response.ok || !data?.success) {
+        throw new Error(
+          getHttpErrorMessage(response.status, "Failed to create task", {
+            forbiddenMessage: "Task creation is blocked by plan or usage limit",
+          })
+        )
       }
 
       toast.success('Task created successfully')
@@ -711,26 +722,35 @@ export function TasksContent() {
     }
   }
 
-  const handleDeleteTask = async (task: Task) => {
-    const confirmed = window.confirm(`Delete task "${task.name}"?`)
-    if (!confirmed) return
+  const handleDeleteTask = (task: Task) => {
+    setDeleteTargetTask(task)
+  }
 
+  const confirmDeleteTask = async () => {
+    if (!deleteTargetTask) return
+
+    setIsDeleting(true)
     try {
-      const response = await fetch(`/api/v1/tasks/${task.id}`, {
+      const response = await fetch(`/api/v1/tasks/${deleteTargetTask.id}`, {
         method: "DELETE",
         credentials: "include",
       })
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
+      const deleteSucceeded =
+        response.ok && (response.status === 204 || data?.success !== false)
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Failed to delete task")
+      if (!deleteSucceeded) {
+        throw new Error(getHttpErrorMessage(response.status, "Failed to delete task"))
       }
 
       toast.success("Task deleted")
-      setTasksData((prev) => prev.filter((item) => item.id !== task.id))
+      setTasksData((prev) => prev.filter((item) => item.id !== deleteTargetTask.id))
+      setDeleteTargetTask(null)
     } catch (error) {
       console.error("Delete task error:", error)
       toast.error(error instanceof Error ? error.message : "Failed to delete task")
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -775,7 +795,7 @@ export function TasksContent() {
                       {tasksData.length}/{maxTasks}
                     </span>{" "}
                     used
-                    <span className="mx-2 text-muted-foreground/60">•</span>
+                    <span className="mx-2 text-muted-foreground/60">&middot;</span>
                     <span className="font-mono">{Math.max(0, maxTasks - tasksData.length)}</span>{" "}
                     remaining
                   </>
@@ -1140,12 +1160,6 @@ export function TasksContent() {
                       <SelectItem value="phone">
                         <span className="font-mono text-sm">phone</span>
                       </SelectItem>
-                      <SelectItem value="cc:cvv:exp">
-                        <span className="font-mono text-sm">cc:cvv:exp</span>
-                      </SelectItem>
-                      <SelectItem value="name:cc:cvv:exp:address">
-                        <span className="font-mono text-sm">name:cc:cvv:exp:address</span>
-                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1287,6 +1301,44 @@ export function TasksContent() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={!!deleteTargetTask}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) {
+            setDeleteTargetTask(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle className="text-red-600 dark:text-red-500">Delete Task</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this task? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2 text-sm">
+            <span className="font-medium">Task: </span>
+            <span className="text-muted-foreground">{deleteTargetTask?.name || "Unnamed Task"}</span>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteTargetTask(null)} disabled={isDeleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDeleteTask} disabled={isDeleting}>
+              {isDeleting ? (
+                <>
+                  <IconLoader2 className="mr-2 size-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete Task"
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+

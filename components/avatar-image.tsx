@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { getCachedAvatar, getUserColor } from "@/lib/avatar-cache"
+import { getCachedAvatar, getUserColor, setCachedAvatar } from "@/lib/avatar-cache"
 import { cn } from "@/lib/utils"
 
 interface AvatarImageProps {
@@ -16,6 +16,7 @@ interface AvatarImageProps {
 
 // Session-level cache to avoid repeated preload work when switching pages.
 const loadedAvatarKeys = new Set<string>()
+const inFlightAvatarLoads = new Map<string, Promise<void>>()
 
 export function AvatarImageComponent({
   userId,
@@ -26,7 +27,6 @@ export function AvatarImageComponent({
   className,
 }: AvatarImageProps) {
   const [imageSrc, setImageSrc] = React.useState<string | null>(null)
-  const [isLoading, setIsLoading] = React.useState(true)
   const [showThumbnail, setShowThumbnail] = React.useState(true)
   const [imageError, setImageError] = React.useState(false)
 
@@ -45,6 +45,25 @@ export function AvatarImageComponent({
 
   const bgColor = getUserColor(username)
 
+  const cacheThumbnailFromImage = React.useCallback(
+    async (img: HTMLImageElement, proxyUrl: string) => {
+      if (!avatarHash) return
+      try {
+        const canvas = document.createElement("canvas")
+        canvas.width = 64
+        canvas.height = 64
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0, 64, 64)
+        const thumbnail = canvas.toDataURL("image/jpeg", 0.6)
+        await setCachedAvatar(userId, thumbnail, proxyUrl, avatarHash)
+      } catch (cacheError) {
+        console.warn("[AvatarImage] Failed to update local avatar cache:", cacheError)
+      }
+    },
+    [avatarHash, userId]
+  )
+
   // 构建 Image Proxy URL（使用路径而非 query）
   const buildProxyUrl = React.useCallback((userId: string, sizeNum: number) => {
     // 使用我们自己的 Image Proxy API
@@ -54,11 +73,9 @@ export function AvatarImageComponent({
   React.useEffect(() => {
     // 重置状态
     setImageError(false)
-    setIsLoading(true)
     
     if (!avatarUrl) {
       console.log(`[AvatarImage] No avatar URL for user: ${userId}`)
-      setIsLoading(false)
       setImageSrc(null)
       return
     }
@@ -81,7 +98,7 @@ export function AvatarImageComponent({
           setImageSrc(cached.thumbnail)
           setShowThumbnail(true)
         } else {
-          console.log(`[AvatarImage] ❌ Cache miss or hash mismatch (${cacheTime}ms)`)
+          console.log(`[AvatarImage] Cache miss or hash mismatch (${cacheTime}ms)`)
         }
 
         // 2. 根据尺寸选择合适的图片大小
@@ -96,55 +113,54 @@ export function AvatarImageComponent({
         if (loadedAvatarKeys.has(imageKey) && isMounted) {
           setImageSrc(proxyUrl)
           setShowThumbnail(false)
-          setIsLoading(false)
           setImageError(false)
           return
         }
 
-        console.log(`[AvatarImage] 📡 Fetching from proxy: ${proxyUrl}`)
-
-        // 4. 加载完整图片
-        const imgStart = Date.now()
-        await new Promise<void>((resolve, reject) => {
-          const img = new Image()
-          
-          img.onload = () => {
-            if (isMounted && !abortController.signal.aborted) {
-              const imgTime = Date.now() - imgStart
-              const totalTime = Date.now() - loadStart
-              console.log(`[AvatarImage] ✅ Image loaded (${imgTime}ms) - Total: ${totalTime}ms`)
-              setImageSrc(proxyUrl)
-              setShowThumbnail(false)
-              setIsLoading(false)
-              setImageError(false)
-              loadedAvatarKeys.add(imageKey)
-              resolve()
+        // Deduplicate concurrent requests for the same avatar key.
+        let pendingLoad = inFlightAvatarLoads.get(imageKey)
+        if (!pendingLoad) {
+          console.log(`[AvatarImage] 📡 Fetching from proxy: ${proxyUrl}`)
+          const imgStart = Date.now()
+          pendingLoad = new Promise<void>((resolve, reject) => {
+            const img = new Image()
+            img.onload = () => {
+              void (async () => {
+                await cacheThumbnailFromImage(img, proxyUrl)
+                const imgTime = Date.now() - imgStart
+                console.log(`[AvatarImage] ✅ Image loaded (${imgTime}ms)`)
+                loadedAvatarKeys.add(imageKey)
+                resolve()
+              })()
             }
-          }
-          
-          img.onerror = (e) => {
-            if (!abortController.signal.aborted) {
+            img.onerror = (e) => {
               const imgTime = Date.now() - imgStart
               console.error(`[AvatarImage] ❌ Image load failed (${imgTime}ms):`, e)
-              reject(new Error('Failed to load image'))
+              reject(new Error("Failed to load image"))
             }
-          }
-          
-          // 监听 abort 信号
-          abortController.signal.addEventListener('abort', () => {
-            img.src = '' // 取消加载
-            reject(new Error('Image loading aborted'))
+            img.src = proxyUrl
           })
-          
-          img.src = proxyUrl
-        })
+          inFlightAvatarLoads.set(imageKey, pendingLoad)
+          pendingLoad.finally(() => {
+            inFlightAvatarLoads.delete(imageKey)
+          })
+        }
+
+        await pendingLoad
+
+        if (isMounted && !abortController.signal.aborted) {
+          const totalTime = Date.now() - loadStart
+          console.log(`[AvatarImage] ✅ Avatar ready - Total: ${totalTime}ms`)
+          setImageSrc(proxyUrl)
+          setShowThumbnail(false)
+          setImageError(false)
+        }
       } catch (error) {
         if (isMounted && !abortController.signal.aborted) {
           const totalTime = Date.now() - loadStart
           console.error(`[AvatarImage] ❌ Avatar loading error (${totalTime}ms):`, error)
           setImageError(true)
           setImageSrc(null)
-          setIsLoading(false)
         }
       }
     }
@@ -156,7 +172,7 @@ export function AvatarImageComponent({
       isMounted = false
       abortController.abort()
     }
-  }, [userId, avatarUrl, avatarHash, size, buildProxyUrl])
+  }, [userId, avatarUrl, avatarHash, size, buildProxyUrl, cacheThumbnailFromImage])
 
   return (
     <Avatar className={cn(sizeClasses[size], "rounded-lg", className)}>

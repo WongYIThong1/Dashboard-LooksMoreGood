@@ -1,180 +1,190 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import {
+  createRequestId,
+  errorResponse,
+  internalErrorResponse,
+  isSafeTxtFilename,
+  sameOriginWriteGuard,
+} from "@/lib/api/security"
+
+const MAX_FILE_SIZE_BYTES = 512 * 1024 * 1024 // 512MB
+const MAX_URL_FILE_SCAN_BYTES = 20 * 1024 * 1024 // 20MB
+const MAX_URL_FILE_LINES = 10000
+
+async function countLinesInTextFile(file: File, maxBytes: number) {
+  const reader = file.stream().getReader()
+  let lineCount = 0
+  let bytesRead = 0
+  let hasContent = false
+  let lastByte = 10
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+
+    bytesRead += value.byteLength
+    if (bytesRead > maxBytes) {
+      throw new Error("FILE_SCAN_LIMIT_EXCEEDED")
+    }
+
+    for (const byte of value) {
+      if (byte === 10) {
+        lineCount += 1
+      } else if (byte !== 13) {
+        hasContent = true
+      }
+      lastByte = byte
+    }
+
+    if (lineCount > MAX_URL_FILE_LINES) {
+      throw new Error("LINE_LIMIT_EXCEEDED")
+    }
+  }
+
+  if (hasContent && lastByte !== 10 && lastByte !== 13) {
+    lineCount += 1
+  }
+
+  return lineCount
+}
 
 export async function POST(request: Request) {
+  const requestId = createRequestId()
+
   try {
+    const csrfError = sameOriginWriteGuard(request, requestId)
+    if (csrfError) return csrfError
+
     const supabase = await createClient()
-    
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
     if (authError || !user) {
-      console.error('Auth error in POST /api/files/upload:', authError)
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
+      return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
-    console.log('Upload request from user:', user.id)
-
-    // 获取用户配额信息
     const { data: profile, error: profileError } = await supabase
-      .from('user_profiles')
-      .select('storage_used, storage_limit, plan')
-      .eq('id', user.id)
+      .from("user_profiles")
+      .select("storage_used, storage_limit, plan")
+      .eq("id", user.id)
       .single()
 
-    if (profileError) {
-      console.error('Profile fetch error:', profileError)
-      return NextResponse.json(
-        { error: 'Failed to fetch user profile' },
-        { status: 500 }
+    if (profileError || !profile) {
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to fetch user profile", requestId)
+    }
+
+    if (profile.plan === "Free") {
+      return errorResponse(
+        403,
+        "FORBIDDEN",
+        "Free plan users cannot upload files. Please upgrade your plan.",
+        requestId
       )
     }
 
-    console.log('User profile:', { plan: profile.plan, storage_used: profile.storage_used, storage_limit: profile.storage_limit })
-
-    // 检查用户计划
-    if (profile.plan === 'Free') {
-      console.log('Upload blocked: Free plan user')
-      return NextResponse.json(
-        { error: 'Free plan users cannot upload files. Please upgrade your plan.' },
-        { status: 403 }
-      )
-    }
-
-    // 检查存储配额
     if (profile.storage_limit === 0) {
-      console.log('Upload blocked: No storage quota')
-      return NextResponse.json(
-        { error: 'Storage quota is not set. Please contact support.' },
-        { status: 403 }
+      return errorResponse(
+        403,
+        "FORBIDDEN",
+        "Storage quota is not set. Please contact support.",
+        requestId
       )
     }
 
-    // 获取上传的文件
     const formData = await request.formData()
-    const file = formData.get('file') as File
-    const fileType = formData.get('type') as string
+    const uploaded = formData.get("file")
+    const fileType = formData.get("type")
 
-    if (!file) {
-      console.log('Upload blocked: No file provided')
-      return NextResponse.json(
-        { error: 'No file provided' },
-        { status: 400 }
+    if (!(uploaded instanceof File)) {
+      return errorResponse(400, "VALIDATION_ERROR", "No file provided", requestId)
+    }
+    if (fileType !== "data" && fileType !== "urls") {
+      return errorResponse(400, "VALIDATION_ERROR", "Invalid file type", requestId)
+    }
+    if (!isSafeTxtFilename(uploaded.name)) {
+      return errorResponse(400, "VALIDATION_ERROR", "Only safe .txt file names are allowed", requestId)
+    }
+    if (uploaded.size <= 0) {
+      return errorResponse(400, "VALIDATION_ERROR", "Uploaded file is empty", requestId)
+    }
+    if (uploaded.size > MAX_FILE_SIZE_BYTES) {
+      return errorResponse(413, "PAYLOAD_TOO_LARGE", "File too large. Maximum size is 512MB.", requestId)
+    }
+    if (profile.storage_used + uploaded.size > profile.storage_limit) {
+      return errorResponse(
+        403,
+        "FORBIDDEN",
+        "Storage quota exceeded. Please delete some files or upgrade your plan.",
+        requestId
       )
     }
 
-    console.log('File details:', { name: file.name, size: file.size, type: fileType })
-
-    if (!fileType || !['data', 'urls'].includes(fileType)) {
-      console.log('Upload blocked: Invalid file type')
-      return NextResponse.json(
-        { error: 'Invalid file type' },
-        { status: 400 }
-      )
+    let lineCount: number | null = null
+    if (fileType === "urls") {
+      try {
+        lineCount = await countLinesInTextFile(uploaded, MAX_URL_FILE_SCAN_BYTES)
+      } catch (error) {
+        if (error instanceof Error && error.message === "LINE_LIMIT_EXCEEDED") {
+          return errorResponse(
+            400,
+            "VALIDATION_ERROR",
+            "URLs files are limited to 10,000 lines maximum.",
+            requestId
+          )
+        }
+        if (error instanceof Error && error.message === "FILE_SCAN_LIMIT_EXCEEDED") {
+          return errorResponse(
+            400,
+            "VALIDATION_ERROR",
+            "URLs files larger than 20MB are not supported.",
+            requestId
+          )
+        }
+        return errorResponse(400, "VALIDATION_ERROR", "Failed to process URLs file", requestId)
+      }
     }
 
-    // 验证文件类型
-    if (!file.name.toLowerCase().endsWith('.txt')) {
-      console.log('Upload blocked: Not a .txt file')
-      return NextResponse.json(
-        { error: 'Only .txt files are allowed' },
-        { status: 400 }
-      )
-    }
-
-    // 检查文件大小 - 最高 5GB
-    const maxSize = 5 * 1024 * 1024 * 1024 // 5GB
-    if (file.size > maxSize) {
-      console.log('Upload blocked: File too large')
-      return NextResponse.json(
-        { error: 'File too large. Maximum size is 5GB.' },
-        { status: 400 }
-      )
-    }
-
-    // 检查是否会超过配额
-    if (profile.storage_used + file.size > profile.storage_limit) {
-      console.log('Upload blocked: Storage quota exceeded')
-      return NextResponse.json(
-        { error: 'Storage quota exceeded. Please delete some files or upgrade your plan.' },
-        { status: 403 }
-      )
-    }
-
-    // 读取文件内容计算行数
-    const text = await file.text()
-    const lineCount = text.split('\n').length
-
-    // 如果是 URLs 类型，检查行数限制
-    if (fileType === 'urls' && lineCount > 10000) {
-      console.log('Upload blocked: Too many lines for URLs type')
-      return NextResponse.json(
-        { error: 'URLs files are limited to 10,000 lines maximum.' },
-        { status: 400 }
-      )
-    }
-
-    console.log('File line count:', lineCount)
-
-    // 上传到 Storage
-    const filePath = `${user.id}/${file.name}`
-    console.log('Uploading to storage:', filePath)
-    
+    const filePath = `${user.id}/${uploaded.name}`
     const { error: uploadError } = await supabase.storage
-      .from('user-files')
-      .upload(filePath, file, {
-        cacheControl: '3600',
+      .from("user-files")
+      .upload(filePath, uploaded, {
+        cacheControl: "3600",
         upsert: false,
+        contentType: "text/plain; charset=utf-8",
       })
 
     if (uploadError) {
-      console.error('Storage upload error:', uploadError)
-      return NextResponse.json(
-        { error: `Failed to upload file: ${uploadError.message}` },
-        { status: 500 }
-      )
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to upload file", requestId)
     }
 
-    console.log('File uploaded to storage successfully')
-
-    // 保存到数据库（触发器会自动更新 storage_used）
-    const { error: dbError } = await supabase
-      .from('user_files')
-      .insert({
-        user_id: user.id,
-        filename: file.name,
-        file_path: filePath,
-        file_size: file.size,
-        mime_type: file.type || 'text/plain',
-        file_type: fileType,
-        line_count: lineCount,
-      })
+    const { error: dbError } = await supabase.from("user_files").insert({
+      user_id: user.id,
+      filename: uploaded.name.trim(),
+      file_path: filePath,
+      file_size: uploaded.size,
+      mime_type: uploaded.type || "text/plain",
+      file_type: fileType,
+      line_count: lineCount,
+    })
 
     if (dbError) {
-      console.error('Database insert error:', dbError)
-      // 如果数据库插入失败，删除已上传的文件
-      await supabase.storage.from('user-files').remove([filePath])
-      return NextResponse.json(
-        { error: `Failed to save file record: ${dbError.message}` },
-        { status: 500 }
-      )
+      await supabase.storage.from("user-files").remove([filePath])
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to save file record", requestId)
     }
-
-    console.log('File record saved to database successfully')
 
     return NextResponse.json({
       success: true,
-      filename: file.name,
-      size: file.size,
+      filename: uploaded.name,
+      size: uploaded.size,
       lines: lineCount,
+      requestId,
     })
   } catch (error) {
-    console.error('Upload error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return internalErrorResponse(requestId, "api/files/upload", error)
   }
 }
+

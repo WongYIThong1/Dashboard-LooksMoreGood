@@ -139,6 +139,7 @@ export function resetInputTracking(): void {
 // 4. 浏览器指纹 - 简单的环境检测
 export function getBrowserFingerprint(): string {
   if (typeof window === 'undefined') return 'server'
+  const typedNavigator = navigator as Navigator & { deviceMemory?: number }
 
   const features = [
     navigator.userAgent,
@@ -150,7 +151,7 @@ export function getBrowserFingerprint(): string {
     !!window.sessionStorage,
     !!window.localStorage,
     navigator.hardwareConcurrency || 0,
-    (navigator as any).deviceMemory || 0,
+    typedNavigator.deviceMemory || 0,
   ]
 
   return btoa(features.join('|'))

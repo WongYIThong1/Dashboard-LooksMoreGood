@@ -117,7 +117,7 @@ export function MathCaptcha({ onVerify, disabled }: MathCaptchaProps) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <Label htmlFor="captcha">Verify you're human</Label>
+        <Label htmlFor="captcha">Verify you&apos;re human</Label>
         <Button
           type="button"
           variant="ghost"

@@ -18,7 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { IconMail, IconLock, IconUser, IconInnerShadowTop, IconLoader2, IconAlertCircle, IconEye, IconEyeOff, IconCheck, IconX } from "@tabler/icons-react"
 import { toast } from "sonner"
 import { createAntiBotChallenge, validateAntiBotChallenge, cleanupAntiBotChallenge, trackInputTiming, type AntiBotChallenge } from "@/lib/anti-bot"
-import { checkRateLimit, recordAttempt } from "@/lib/rate-limit"
+import { checkRateLimit } from "@/lib/rate-limit"
 import { MathCaptcha } from "@/components/math-captcha"
 
 export default function RegisterPage() {

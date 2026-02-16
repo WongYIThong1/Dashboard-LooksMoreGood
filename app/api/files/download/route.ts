@@ -1,69 +1,62 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import {
+  createRequestId,
+  errorResponse,
+  internalErrorResponse,
+  isSafeTxtFilename,
+  sanitizeDownloadFilename,
+} from "@/lib/api/security"
 
 export async function GET(request: Request) {
+  const requestId = createRequestId()
+
   try {
     const supabase = await createClient()
-    
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
     if (authError || !user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
+      return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
     const { searchParams } = new URL(request.url)
-    const filename = searchParams.get('name')
-
-    if (!filename) {
-      return NextResponse.json(
-        { error: 'Filename is required' },
-        { status: 400 }
-      )
+    const filename = searchParams.get("name")?.trim() ?? ""
+    if (!isSafeTxtFilename(filename)) {
+      return errorResponse(400, "VALIDATION_ERROR", "Invalid filename", requestId)
     }
 
-    // 获取文件信息
     const { data: file, error: fileError } = await supabase
-      .from('user_files')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('filename', filename)
+      .from("user_files")
+      .select("filename, file_path, mime_type")
+      .eq("user_id", user.id)
+      .eq("filename", filename)
       .single()
 
     if (fileError || !file) {
-      return NextResponse.json(
-        { error: 'File not found' },
-        { status: 404 }
-      )
+      return errorResponse(404, "NOT_FOUND", "File not found", requestId)
     }
 
-    // 从 Storage 下载文件
     const { data: fileData, error: downloadError } = await supabase.storage
-      .from('user-files')
+      .from("user-files")
       .download(file.file_path)
 
     if (downloadError || !fileData) {
-      console.error('Download error:', downloadError)
-      return NextResponse.json(
-        { error: 'Failed to download file' },
-        { status: 500 }
-      )
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to download file", requestId)
     }
 
-    // 返回文件
+    const safeName = sanitizeDownloadFilename(file.filename, "download.txt")
     return new NextResponse(fileData, {
       headers: {
-        'Content-Type': file.mime_type,
-        'Content-Disposition': `attachment; filename="${file.filename}"`,
+        "Content-Type": file.mime_type || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${safeName}"`,
+        "Cache-Control": "no-store",
       },
     })
   } catch (error) {
-    console.error('Download error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return internalErrorResponse(requestId, "api/files/download", error)
   }
 }
+

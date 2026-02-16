@@ -96,6 +96,14 @@ const EMPTY_SNAPSHOT: HistorySnapshot = {
   ts: Date.now(),
 }
 
+const HISTORY_LIMIT_DEFAULT = 100
+const HISTORY_LIMIT_MAX = 1000
+
+function clampHistoryLimit(value: number): number {
+  const safe = Number.isFinite(value) ? Math.trunc(value) : HISTORY_LIMIT_DEFAULT
+  return Math.max(1, Math.min(HISTORY_LIMIT_MAX, safe))
+}
+
 const statusConfig: Record<HistoryStatus, { icon: React.ComponentType<{ size?: number; className?: string }>; label: string; color: string }> = {
   completed: { icon: IconCircleCheck, label: "Completed", color: "text-emerald-500" },
   failed: { icon: IconAlertTriangle, label: "Failed", color: "text-red-500" },
@@ -396,9 +404,9 @@ export function HistoryContent() {
       throw new Error("No access token")
     }
 
-    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-    const url = new URL(`${externalApiDomain}/history`)
+    const url = new URL("/api/external/history", window.location.origin)
     url.searchParams.set("page", String(Math.max(1, nextPage)))
+    url.searchParams.set("limit", String(clampHistoryLimit(HISTORY_LIMIT_DEFAULT)))
 
     const response = await fetch(url.toString(), {
       method: "GET",

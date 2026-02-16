@@ -93,6 +93,22 @@ interface ApiFile {
 
 const ALLOWED_EXTENSION = ".txt"
 
+function getHttpErrorMessage(
+  status: number,
+  fallback: string,
+  options?: { forbiddenMessage?: string }
+): string {
+  if (status === 400 || status === 422) return "Invalid request data"
+  if (status === 401) return "Please login again"
+  if (status === 403) return options?.forbiddenMessage || "Permission denied"
+  if (status === 404) return "Resource not found"
+  if (status === 409) return "Operation conflict. Please refresh and retry"
+  if (status === 413) return "File is too large"
+  if (status === 429) return "Too many requests. Please try again later"
+  if (status >= 500) return "Server error. Please try again later"
+  return fallback
+}
+
 export function FilesContent() {
   const [isLoading, setIsLoading] = React.useState(true)
   const [filesData, setFilesData] = React.useState<FileData[]>([])
@@ -170,9 +186,7 @@ export function FilesContent() {
       })
 
       if (!response.ok) {
-        const data = await response.json()
-        console.error('Fetch files error:', data)
-        throw new Error(data.error || 'Failed to fetch files')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to fetch files"))
       }
 
       const data = (await response.json()) as {
@@ -252,8 +266,7 @@ export function FilesContent() {
       })
 
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to download file')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to download file"))
       }
 
       const blob = await response.blob()
@@ -299,10 +312,8 @@ export function FilesContent() {
         method: 'DELETE',
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to delete file')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to delete file"))
       }
 
       // 后台刷新确保数据一致
@@ -345,13 +356,13 @@ export function FilesContent() {
         body: JSON.stringify({ fileNames }),
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => null)
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to delete files')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to delete files"))
       }
 
-      const { success, failed } = data
+      const { success, failed } = data || { success: 0, failed: 0 }
       
       if (failed > 0) {
         toast.warning(`Deleted ${success} files, ${failed} failed`)
@@ -406,10 +417,8 @@ export function FilesContent() {
         }),
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to rename file')
+        throw new Error(getHttpErrorMessage(response.status, "Failed to rename file"))
       }
 
       toast.success('File renamed successfully')
@@ -766,9 +775,11 @@ function formatStorageSize(bytes: number): string {
       })
 
       if (!response.ok) {
-        const data = await response.json()
-        console.error('Upload error response:', data)
-        throw new Error(data.error || 'Failed to upload file')
+        throw new Error(
+          getHttpErrorMessage(response.status, "Failed to upload file", {
+            forbiddenMessage: "Upload is blocked by plan or storage quota",
+          })
+        )
       }
 
       const data = await response.json()
@@ -869,16 +880,12 @@ function formatStorageSize(bytes: number): string {
               setShowUploadDialog(true)
             }}
             variant={canUpload().allowed ? "default" : "outline"}
+            disabled={!canUpload().allowed}
             className="motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out hover:-translate-y-[1px] active:translate-y-0"
           >
             <IconUpload size={16} className="mr-2" />
             Upload
           </Button>
-          {!canUpload().allowed && (
-            <div className="hidden sm:block text-xs text-muted-foreground max-w-[220px] text-right">
-              Upgrade your plan to upload.
-            </div>
-          )}
         </div>
       </div>
 

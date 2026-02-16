@@ -1,196 +1,183 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import {
+  createRequestId,
+  errorResponse,
+  fetchWithTimeout,
+  getAllowedHosts,
+  internalErrorResponse,
+  isUuid,
+  sameOriginWriteGuard,
+  validateOutgoingUrl,
+} from "@/lib/api/security"
 
-// POST - 启动任务
+type RiskFilter = "High" | "High-Med" | "All"
+type AiSensitivity = "Low" | "Medium" | "High"
+
+function mapRiskFilter(value: string): RiskFilter {
+  if (value === "all") return "All"
+  if (value === "medium-high") return "High-Med"
+  return "High"
+}
+
+function mapAiSensitivity(value: string): AiSensitivity {
+  if (value === "low") return "Low"
+  if (value === "high") return "High"
+  return "Medium"
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const supabase = await createClient()
-    
-    // 获取当前用户
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      )
-    }
+  const requestId = createRequestId()
 
-    // 获取 session 来获取 access_token
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-    
-    if (sessionError || !session) {
-      return NextResponse.json(
-        { success: false, error: 'No active session' },
-        { status: 401 }
-      )
-    }
+  try {
+    const csrfError = sameOriginWriteGuard(request, requestId)
+    if (csrfError) return csrfError
 
     const { id: taskId } = await params
+    if (!isUuid(taskId)) {
+      return errorResponse(400, "VALIDATION_ERROR", "Invalid task id format", requestId)
+    }
 
-    // 获取用户 profile 检查 plan 和 credits
+    const supabase = await createClient()
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
+    }
+
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
+
+    if (sessionError || !session?.access_token) {
+      return errorResponse(401, "UNAUTHORIZED", "No active session", requestId)
+    }
+
     const { data: profile, error: profileError } = await supabase
-      .from('user_profiles')
-      .select('plan, credits')
-      .eq('id', user.id)
+      .from("user_profiles")
+      .select("plan, credits")
+      .eq("id", user.id)
       .single()
 
     if (profileError || !profile) {
-      return NextResponse.json(
-        { success: false, error: 'User profile not found' },
-        { status: 404 }
+      return errorResponse(404, "NOT_FOUND", "User profile not found", requestId)
+    }
+
+    if (profile.plan === "Free") {
+      return errorResponse(
+        403,
+        "FORBIDDEN",
+        "Free plan users cannot start tasks. Please upgrade to Pro or Pro+.",
+        requestId
       )
     }
 
-    // 检查用户 plan（只允许 Pro 和 Pro+）
-    if (profile.plan === 'Free') {
-      return NextResponse.json(
-        { success: false, error: 'Free plan users cannot start tasks. Please upgrade to Pro or Pro+.' },
-        { status: 403 }
-      )
-    }
-
-    // 检查 credits 是否足够（假设启动任务需要至少 1 credit）
     if (profile.credits < 1) {
-      return NextResponse.json(
-        { success: false, error: 'Insufficient credits. Please purchase more credits.' },
-        { status: 403 }
+      return errorResponse(
+        403,
+        "FORBIDDEN",
+        "Insufficient credits. Please purchase more credits.",
+        requestId
       )
     }
 
-    // 获取任务详情
     const { data: task, error: taskError } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('id', taskId)
-      .eq('user_id', user.id)
+      .from("tasks")
+      .select("*")
+      .eq("id", taskId)
+      .eq("user_id", user.id)
       .single()
 
     if (taskError || !task) {
-      return NextResponse.json(
-        { success: false, error: 'Task not found or access denied' },
-        { status: 404 }
-      )
+      return errorResponse(404, "NOT_FOUND", "Task not found or access denied", requestId)
     }
 
-    // 检查任务状态
-    if (task.status === 'running' || task.status === 'running_recon') {
-      return NextResponse.json(
-        { success: false, error: 'Task is already running' },
-        { status: 400 }
-      )
+    if (task.status === "running" || task.status === "running_recon") {
+      return errorResponse(409, "CONFLICT", "Task is already running", requestId)
     }
 
-    // 获取文件信息
     const { data: file, error: fileError } = await supabase
-      .from('user_files')
-      .select('file_path')
-      .eq('id', task.file_id)
+      .from("user_files")
+      .select("file_path")
+      .eq("id", task.file_id)
+      .eq("user_id", user.id)
       .single()
 
     if (fileError || !file) {
-      return NextResponse.json(
-        { success: false, error: 'File not found' },
-        { status: 404 }
-      )
+      return errorResponse(404, "NOT_FOUND", "File not found", requestId)
     }
 
-    // 生成 Supabase Storage 的下载 URL
-    const { data: urlData } = await supabase
-      .storage
-      .from('user-files')
-      .createSignedUrl(file.file_path, 3600 * 24 * 7) // 7天有效期
+    const { data: urlData } = await supabase.storage
+      .from("user-files")
+      .createSignedUrl(file.file_path, 3600 * 24 * 7)
 
     if (!urlData?.signedUrl) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to generate download URL' },
-        { status: 500 }
-      )
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to generate download URL", requestId)
     }
 
-    const downloadUrl = urlData.signedUrl
+    const rawExternalApiDomain = process.env.EXTERNAL_API_DOMAIN ?? "http://localhost:8080"
+    const externalBaseUrl = new URL(rawExternalApiDomain)
+    const allowedHosts = getAllowedHosts(
+      process.env.EXTERNAL_API_ALLOWED_HOSTS,
+      externalBaseUrl.hostname
+    )
+    const safeExternalBaseUrl = await validateOutgoingUrl(
+      externalBaseUrl.toString(),
+      allowedHosts,
+      externalBaseUrl.protocol === "http:"
+    )
 
-    // 映射 risk_filter 值
-    let riskFilter = 'High'
-    if (task.parameter_risk_filter === 'medium-high') {
-      riskFilter = 'High-Med'
-    } else if (task.parameter_risk_filter === 'all') {
-      riskFilter = 'All'
+    if (!safeExternalBaseUrl) {
+      return errorResponse(500, "SERVER_MISCONFIGURED", "External API host is not allowed", requestId)
     }
 
-    // 映射 AI sensitivity 值
-    let aiSensitivity = 'Medium'
-    if (task.ai_sensitivity_level === 'low') {
-      aiSensitivity = 'Low'
-    } else if (task.ai_sensitivity_level === 'high') {
-      aiSensitivity = 'High'
-    }
-
-    // 准备发送到外部服务器的数据
     const externalApiData = {
       taskname: task.name,
-      download_url: downloadUrl,
+      download_url: urlData.signedUrl,
       autodumper: task.auto_dumper || false,
-      preset: task.preset || '',
-      RiskFiltere: riskFilter,
-      AISensitivity: aiSensitivity,
-      EvasionEngine: task.evasion_engine || false,
+      preset: task.preset || "",
+      RiskFiltere: mapRiskFilter(task.parameter_risk_filter),
+      AISensitivity: mapAiSensitivity(task.ai_sensitivity_level),
+      EvasionEngine: false,
       accesstoken: `Bearer ${session.access_token}`,
     }
 
-    console.log('[START TASK] Sending to external API:', {
-      taskId,
-      url: `${process.env.EXTERNAL_API_DOMAIN}/start/${taskId}`,
-      data: {
-        ...externalApiData,
-        accesstoken: '[REDACTED]', // 不记录 token
-      },
-    })
-
-    // 发送到外部服务器
-    const externalApiDomain = process.env.EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-    const externalResponse = await fetch(`${externalApiDomain}/start/${taskId}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(externalApiData),
-    })
-
-    const externalData = await externalResponse.json()
-
-    console.log('[START TASK] External API response:', {
-      status: externalResponse.status,
-      data: externalData,
-    })
-
-    if (!externalResponse.ok) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: externalData.error || 'Failed to start task on external server' 
+    const externalStartUrl = new URL(`/start/${taskId}`, safeExternalBaseUrl)
+    const externalResponse = await fetchWithTimeout(
+      externalStartUrl,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        { status: externalResponse.status }
-      )
+        body: JSON.stringify(externalApiData),
+      },
+      15000
+    )
+
+    const externalData = await externalResponse.json().catch(() => null)
+    if (!externalResponse.ok) {
+      return errorResponse(502, "UPSTREAM_ERROR", "Failed to start task on external server", requestId, {
+        upstreamStatus: externalResponse.status,
+      })
     }
 
-    // 直接返回第三方 API 的响应，不更新数据库
     return NextResponse.json({
       success: true,
-      message: 'success',
+      message: "success",
       taskid: taskId,
+      requestId,
+      upstream: externalData?.success === true ? "ok" : "unknown",
     })
   } catch (error) {
-    console.error('Start task API error:', error)
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Internal server error' 
-      },
-      { status: 500 }
-    )
+    return internalErrorResponse(requestId, "api/v1/tasks/[id]/start", error)
   }
 }
+

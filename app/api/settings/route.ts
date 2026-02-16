@@ -1,44 +1,43 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import {
+  createRequestId,
+  errorResponse,
+  internalErrorResponse,
+  sameOriginWriteGuard,
+} from "@/lib/api/security"
 
 export async function GET() {
+  const requestId = createRequestId()
+
   try {
     const supabase = await createClient()
-    
-    // 获取当前用户
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
     if (authError || !user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
+      return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
-    // 从 user_profiles 表获取用户信息
     const { data: profile, error: profileError } = await supabase
-      .from('user_profiles')
-      .select('username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash, max_tasks, subscription_days, subscription_expires_at')
-      .eq('id', user.id)
+      .from("user_profiles")
+      .select(
+        "username, email, plan, credits, system_notification, privacy_mode, avatar_url, avatar_hash, max_tasks, subscription_days, subscription_expires_at"
+      )
+      .eq("id", user.id)
       .single()
 
     if (profileError) {
-      console.error('Profile fetch error:', profileError)
-      return NextResponse.json(
-        { error: 'Failed to fetch profile' },
-        { status: 500 }
-      )
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to fetch profile", requestId)
     }
 
     if (!profile) {
-      return NextResponse.json(
-        { error: 'Profile not found' },
-        { status: 404 }
-      )
+      return errorResponse(404, "NOT_FOUND", "Profile not found", requestId)
     }
 
-    // 计算剩余天数
-    let daysRemaining = null
+    let daysRemaining: number | null = null
     let isExpired = false
     if (profile.subscription_expires_at) {
       const expiresAt = new Date(profile.subscription_expires_at)
@@ -49,9 +48,10 @@ export async function GET() {
     }
 
     return NextResponse.json({
-      username: profile.username || 'User',
-      email: profile.email || user.email || 'user@example.com',
-      plan: profile.plan || 'Free',
+      success: true,
+      username: profile.username || "User",
+      email: profile.email || user.email || "user@example.com",
+      plan: profile.plan || "Free",
       credits: profile.credits || 0,
       notification: profile.system_notification,
       privacy: profile.privacy_mode,
@@ -62,56 +62,52 @@ export async function GET() {
       subscription_expires_at: profile.subscription_expires_at,
       days_remaining: daysRemaining,
       is_expired: isExpired,
+      requestId,
     })
   } catch (error) {
-    console.error('Settings API error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return internalErrorResponse(requestId, "api/settings", error)
   }
 }
 
 export async function PUT(request: Request) {
+  const requestId = createRequestId()
+
   try {
+    const csrfError = sameOriginWriteGuard(request, requestId)
+    if (csrfError) return csrfError
+
     const supabase = await createClient()
-    
-    // 获取当前用户
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
     if (authError || !user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      )
+      return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
-    const body = await request.json()
-    const { notification, privacy } = body
+    const body = await request.json().catch(() => null)
+    const notification = body?.notification
+    const privacy = body?.privacy
+    if (typeof notification !== "boolean" || typeof privacy !== "boolean") {
+      return errorResponse(400, "VALIDATION_ERROR", "notification and privacy must be boolean", requestId)
+    }
 
-    // 更新 user_profiles 表
     const { error: updateError } = await supabase
-      .from('user_profiles')
+      .from("user_profiles")
       .update({
         system_notification: notification,
         privacy_mode: privacy,
       })
-      .eq('id', user.id)
+      .eq("id", user.id)
 
     if (updateError) {
-      console.error('Update error:', updateError)
-      return NextResponse.json(
-        { error: 'Failed to update settings' },
-        { status: 500 }
-      )
+      return errorResponse(500, "INTERNAL_ERROR", "Failed to update settings", requestId)
     }
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, requestId })
   } catch (error) {
-    console.error('Settings update API error:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    )
+    return internalErrorResponse(requestId, "api/settings", error)
   }
 }
+

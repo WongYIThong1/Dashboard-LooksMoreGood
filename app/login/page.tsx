@@ -19,7 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { IconMail, IconLock, IconInnerShadowTop, IconLoader2, IconAlertCircle } from "@tabler/icons-react"
 import { toast } from "sonner"
 import { createAntiBotChallenge, validateAntiBotChallenge, cleanupAntiBotChallenge, trackInputTiming, type AntiBotChallenge } from "@/lib/anti-bot"
-import { checkRateLimit, recordAttempt } from "@/lib/rate-limit"
+import { checkRateLimit } from "@/lib/rate-limit"
 import { MathCaptcha } from "@/components/math-captcha"
 
 function LoginForm() {

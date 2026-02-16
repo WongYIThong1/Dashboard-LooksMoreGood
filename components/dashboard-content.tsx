@@ -79,6 +79,13 @@ type DashboardSnapshot = {
 
 const ACTIVITY_LIMIT = 3
 const ANNOUNCEMENT_LIMIT = 3
+const DASHBOARD_TOP_DEFAULT = 100
+const DASHBOARD_TOP_MAX = 200
+
+function clampTop(value: number): number {
+  const safe = Number.isFinite(value) ? Math.trunc(value) : DASHBOARD_TOP_DEFAULT
+  return Math.max(1, Math.min(DASHBOARD_TOP_MAX, safe))
+}
 
 const DEFAULT_USER: DashboardUser = {
   user_name: "User",
@@ -208,7 +215,8 @@ function normalizeLeaderboard(input: unknown): LeaderboardItem[] {
 
 function normalizeRecentActivity(input: unknown): RecentActivityItem[] {
   if (!Array.isArray(input)) return []
-  return input
+  return dedupeRecentActivity(
+    input
     .map((item) => {
       const row = isRecord(item) ? item : {}
       return {
@@ -219,6 +227,31 @@ function normalizeRecentActivity(input: unknown): RecentActivityItem[] {
         ts: toInteger(row.ts),
         event_id: toText(row.event_id),
       }
+    })
+  )
+}
+
+function getRecentActivityKey(item: RecentActivityItem): string {
+  if (item.event_id) return `event:${item.event_id}`
+
+  const parts = [
+    item.taskid || "task",
+    String(item.ts || 0),
+    item.domain || "-",
+    item.country || "-",
+    item.category || "-",
+  ]
+  return `fallback:${parts.join("|")}`
+}
+
+function dedupeRecentActivity(items: RecentActivityItem[]): RecentActivityItem[] {
+  const seen = new Set<string>()
+  return items
+    .filter((item) => {
+      const key = getRecentActivityKey(item)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
     })
     .sort((a, b) => b.ts - a.ts)
     .slice(0, ACTIVITY_LIMIT)
@@ -236,17 +269,7 @@ function mergeRecentActivity(prev: RecentActivityItem[], incoming: unknown): Rec
   const next = normalizeRecentActivity([incoming])
   if (next.length === 0) return prev.slice(0, ACTIVITY_LIMIT)
 
-  const merged = [...next, ...prev]
-  const seen = new Set<string>()
-  return merged
-    .filter((item) => {
-      const key = item.event_id || `${item.taskid}_${item.ts}`
-      if (!key || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, ACTIVITY_LIMIT)
+  return dedupeRecentActivity([...next, ...prev])
 }
 
 function dedupeAnnouncements(items: AnnouncementItem[]): AnnouncementItem[] {
@@ -344,9 +367,8 @@ export function DashboardContent() {
       throw new Error("No access token")
     }
 
-    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-    const url = new URL(`${externalApiDomain}/dashboard`)
-    url.searchParams.set("top", "0")
+    const url = new URL("/api/external/dashboard", window.location.origin)
+    url.searchParams.set("top", String(clampTop(DASHBOARD_TOP_DEFAULT)))
     url.searchParams.set("activity_limit", String(ACTIVITY_LIMIT))
     url.searchParams.set("ann_limit", String(ANNOUNCEMENT_LIMIT))
 
@@ -370,8 +392,7 @@ export function DashboardContent() {
     const token = await getAccessToken()
     if (!token) return false
 
-    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-    const response = await fetch(`${externalApiDomain}/announcement`, {
+    const response = await fetch("/api/external/announcement", {
       method: "GET",
       cache: "no-store",
       headers: {
@@ -520,8 +541,7 @@ export function DashboardContent() {
           return
         }
 
-        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
-        const url = new URL(`${externalApiDomain}/sse/dashboard`)
+        const url = new URL("/api/external/sse/dashboard", window.location.origin)
         if (lastEventIdRef.current) {
           url.searchParams.set("since", lastEventIdRef.current)
         }
@@ -808,8 +828,8 @@ export function DashboardContent() {
               </div>
             </CardHeader>
             <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide space-y-3">
-              {recentActivity.map((item, index) => (
-                <div key={item.event_id || `${item.taskid}_${index}`} className="flex items-start justify-between gap-3">
+              {recentActivity.map((item) => (
+                <div key={getRecentActivityKey(item)} className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-1 gap-3">
                     <div className="mt-1.5 size-2 shrink-0 rounded-full bg-blue-500" />
                     <div className="min-w-0 flex-1">
