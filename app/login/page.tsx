@@ -16,11 +16,11 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { IconMail, IconLock, IconInnerShadowTop, IconLoader2, IconAlertCircle } from "@tabler/icons-react"
+import { IconMail, IconLock, IconLoader2, IconAlertCircle } from "@tabler/icons-react"
 import { toast } from "sonner"
 import { createAntiBotChallenge, validateAntiBotChallenge, cleanupAntiBotChallenge, trackInputTiming, type AntiBotChallenge } from "@/lib/anti-bot"
 import { checkRateLimit } from "@/lib/rate-limit"
-import { MathCaptcha } from "@/components/math-captcha"
+import { SliderCaptcha } from "@/components/slider-captcha"
 
 function LoginForm() {
   const router = useRouter()
@@ -238,7 +238,22 @@ function LoginForm() {
       <div className={cn("flex flex-col gap-6 w-full max-w-[420px]")}>
         {/* Logo */}
         <div className="flex items-center justify-center gap-2">
-          <IconInnerShadowTop className="size-8" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            width="32"
+            height="32"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ opacity: 1 }}
+          >
+            <path d="M12 8V4H8" />
+            <rect width="16" height="12" x="4" y="8" rx="2" />
+            <path d="M2 14h2m16 0h2m-7-1v2m-6-2v2" />
+          </svg>
           <span className="text-2xl font-bold">SQLBots</span>
         </div>
 
@@ -323,7 +338,7 @@ function LoginForm() {
                 )}
               </div>
 
-              <MathCaptcha 
+              <SliderCaptcha
                 onVerify={setCaptchaVerified} 
                 disabled={isLoading}
               />
