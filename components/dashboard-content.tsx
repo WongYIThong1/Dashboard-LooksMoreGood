@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useRouter } from "next/navigation"
 import {
   IconTrophy,
   IconDatabase,
@@ -9,6 +10,7 @@ import {
   IconFlame,
   IconTarget,
   IconTrendingUp,
+  IconRefresh,
 } from "@tabler/icons-react"
 import {
   Card,
@@ -26,6 +28,7 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
 import { getCachedUserInfo, setCachedUserInfo } from "@/lib/user-cache"
 import { toast } from "sonner"
 
@@ -126,6 +129,39 @@ function formatCount(value: number): string {
 function formatTime(ts: number): string {
   if (!Number.isFinite(ts) || ts <= 0) return "-"
   return new Date(ts).toLocaleString()
+}
+
+function useFastCountUp(target: number, durationMs = 600): number {
+  const [value, setValue] = React.useState(0)
+
+  React.useEffect(() => {
+    const safeTarget = Math.max(0, Math.trunc(target))
+    if (safeTarget === 0) {
+      setValue(0)
+      return
+    }
+
+    let rafId = 0
+    const startAt = performance.now()
+
+    const tick = (now: number) => {
+      const elapsed = now - startAt
+      const progress = Math.min(1, elapsed / durationMs)
+      setValue(Math.floor(safeTarget * progress))
+      if (progress < 1) {
+        rafId = window.requestAnimationFrame(tick)
+      }
+    }
+
+    setValue(0)
+    rafId = window.requestAnimationFrame(tick)
+
+    return () => {
+      window.cancelAnimationFrame(rafId)
+    }
+  }, [durationMs, target])
+
+  return value
 }
 
 function normalizeUser(input: unknown): DashboardUser {
@@ -240,6 +276,22 @@ function normalizeAnnouncements(input: unknown): AnnouncementItem[] {
   return dedupeAnnouncements(mapped)
 }
 
+function extractAnnouncements(input: unknown): AnnouncementItem[] {
+  if (Array.isArray(input)) {
+    return normalizeAnnouncements(input)
+  }
+
+  if (!isRecord(input)) return []
+
+  const list = normalizeAnnouncements(input.announcements ?? input.items ?? input.data)
+  if (list.length > 0) return list
+
+  const single = normalizeAnnouncements([input.announcement ?? input.item])
+  if (single.length > 0) return single
+
+  return []
+}
+
 function normalizeSnapshot(input: unknown): DashboardSnapshot {
   const row = isRecord(input) ? input : {}
   return {
@@ -253,8 +305,10 @@ function normalizeSnapshot(input: unknown): DashboardSnapshot {
 }
 
 export function DashboardContent() {
+  const router = useRouter()
   const [snapshot, setSnapshot] = React.useState<DashboardSnapshot | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
+  const [isRefreshingAnnouncements, setIsRefreshingAnnouncements] = React.useState(false)
 
   const lastEventIdRef = React.useRef<string>("")
   const sseAbortRef = React.useRef<AbortController | null>(null)
@@ -312,22 +366,25 @@ export function DashboardContent() {
     applySnapshot(payload)
   }, [applySnapshot, getAccessToken])
 
-  const fetchAnnouncements = React.useCallback(async () => {
+  const fetchAnnouncements = React.useCallback(async (): Promise<boolean> => {
     const token = await getAccessToken()
-    if (!token) return
+    if (!token) return false
 
     const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
     const response = await fetch(`${externalApiDomain}/announcement`, {
       method: "GET",
+      cache: "no-store",
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
       },
     })
 
-    if (!response.ok) return
+    if (!response.ok) return false
 
-    const payload = normalizeAnnouncements(await response.json())
+    const payload = extractAnnouncements(await response.json())
+    if (payload.length === 0) return false
+
     setSnapshot((prev) => {
       if (!prev) return prev
       return {
@@ -336,7 +393,30 @@ export function DashboardContent() {
         ts: Date.now(),
       }
     })
+    return true
   }, [getAccessToken])
+
+  const handleRefreshAnnouncements = React.useCallback(async () => {
+    const startedAt = Date.now()
+    setIsRefreshingAnnouncements(true)
+    try {
+      const ok = await fetchAnnouncements()
+      if (!ok) {
+        toast("No announcements available")
+      } else {
+        router.refresh()
+      }
+    } catch (error) {
+      console.error("[Dashboard] announcements refresh failed:", error)
+      toast.error("Failed to refresh announcements")
+    } finally {
+      const elapsed = Date.now() - startedAt
+      if (elapsed < 500) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500 - elapsed))
+      }
+      setIsRefreshingAnnouncements(false)
+    }
+  }, [fetchAnnouncements, router])
 
   const handleDashboardEvent = React.useCallback((raw: string, eventName: string) => {
     if (!raw) return
@@ -384,30 +464,24 @@ export function DashboardContent() {
     }
 
     if (eventType === "announcement_update") {
+      const incomingList = normalizeAnnouncements(packet.announcements)
+      const incoming = incomingList.length > 0
+        ? incomingList
+        : normalizeAnnouncements([packet.announcement ?? packet])
+
+      if (incoming.length === 0) return
+
       setSnapshot((prev) => {
         if (!prev) return prev
 
-        const incomingList = normalizeAnnouncements(packet.announcements)
-        if (incomingList.length > 0) {
-          return {
-            ...prev,
-            announcements: dedupeAnnouncements([...incomingList, ...prev.announcements]),
-            ts: Date.now(),
-          }
+        return {
+          ...prev,
+          announcements: dedupeAnnouncements([...incoming, ...prev.announcements]),
+          ts: Date.now(),
         }
-
-        const incomingOne = normalizeAnnouncements([packet.announcement ?? packet])
-        if (incomingOne.length > 0) {
-          return {
-            ...prev,
-            announcements: dedupeAnnouncements([...incomingOne, ...prev.announcements]),
-            ts: Date.now(),
-          }
-        }
-
-        return prev
       })
       void fetchAnnouncements()
+      return
     }
   }, [applySnapshot, fetchAnnouncements])
 
@@ -554,6 +628,9 @@ export function DashboardContent() {
   const leaderboard = snapshot?.leaderboard ?? []
   const announcements = snapshot?.announcements ?? []
   const recentActivity = snapshot?.recent_activity ?? []
+  const animatedRank = useFastCountUp(user.rank ?? 0, 550)
+  const animatedInjected = useFastCountUp(user.injected_total, 550)
+  const animatedDumped = useFastCountUp(user.dumped_total, 550)
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto scrollbar-hide p-4 font-[family-name:var(--font-inter)]">
@@ -577,7 +654,9 @@ export function DashboardContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Rank</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatRank(user.rank)}</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">
+                  {user.rank === null ? "-" : `#${animatedRank}`}
+                </p>
               </div>
               <div className="rounded-lg bg-yellow-500/10 p-2">
                 <IconTrophy className="size-5 text-yellow-500" />
@@ -595,7 +674,7 @@ export function DashboardContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Injected</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.injected_total)}</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(animatedInjected)}</p>
               </div>
               <div className="rounded-lg bg-blue-500/10 p-2">
                 <IconTarget className="size-5 text-blue-500" />
@@ -613,7 +692,7 @@ export function DashboardContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Dumped</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.dumped_total)}</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(animatedDumped)}</p>
               </div>
               <div className="rounded-lg bg-purple-500/10 p-2">
                 <IconDatabase className="size-5 text-purple-500" />
@@ -685,14 +764,27 @@ export function DashboardContent() {
         </Card>
 
         <div className="flex flex-col gap-4 lg:col-span-2">
-          <Card className="h-[190px] rounded-xl">
+          <Card className="h-[230px] rounded-xl">
             <CardHeader className="pb-2">
-              <div className="flex items-center gap-2">
-                <IconBell className="size-4 text-blue-500" />
-                <CardTitle className="text-base">Announcements</CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <IconBell className="size-4 text-blue-500" />
+                  <CardTitle className="text-base">Announcements</CardTitle>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void handleRefreshAnnouncements()}
+                  disabled={isRefreshingAnnouncements}
+                >
+                  <IconRefresh className={`size-3.5 ${isRefreshingAnnouncements ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
               </div>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 overflow-auto space-y-3">
+            <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide space-y-3">
               {announcements.map((item) => (
                 <div key={item.id} className="flex gap-3">
                   <div className="mt-1.5 size-2 rounded-full bg-blue-500" />

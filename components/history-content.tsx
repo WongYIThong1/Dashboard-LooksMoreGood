@@ -12,13 +12,11 @@ import {
   IconSortAscending,
   IconSortDescending,
   IconDownload,
-  IconTrash,
   IconCalendar,
 } from "@tabler/icons-react"
 import {
   flexRender,
   getCoreRowModel,
-  getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
@@ -32,7 +30,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -43,51 +40,164 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { toast } from "sonner"
 
-// Mock history data
-interface HistoryData {
-  id: string
-  taskName: string
-  status: "completed" | "failed" | "cancelled"
-  injected: number
+type HistoryStatus = "completed" | "failed" | "deleted"
+
+type HistoryItem = {
+  taskid: string
+  taskname: string
+  status: HistoryStatus
+  success: number
   dumped: number
-  duration: string
-  startedAt: string
-  completedAt: string
+  duration_ms: number
+  completed_time: string
 }
 
-const historyData: HistoryData[] = [
-  { id: "1", taskName: "Task #1", status: "completed", injected: 500, dumped: 15420, duration: "2h 34m", startedAt: "2026-01-11 14:00", completedAt: "2026-01-11 16:34" },
-  { id: "2", taskName: "Task #2", status: "completed", injected: 320, dumped: 8932, duration: "1h 12m", startedAt: "2026-01-11 10:00", completedAt: "2026-01-11 11:12" },
-  { id: "3", taskName: "Task #3", status: "failed", injected: 45, dumped: 0, duration: "15m", startedAt: "2026-01-10 22:00", completedAt: "2026-01-10 22:15" },
-  { id: "4", taskName: "Task #4", status: "completed", injected: 890, dumped: 45123, duration: "4h 56m", startedAt: "2026-01-10 08:00", completedAt: "2026-01-10 12:56" },
-  { id: "5", taskName: "Task #5", status: "cancelled", injected: 120, dumped: 3200, duration: "45m", startedAt: "2026-01-09 16:00", completedAt: "2026-01-09 16:45" },
-  { id: "6", taskName: "Task #6", status: "completed", injected: 650, dumped: 28901, duration: "3h 20m", startedAt: "2026-01-09 09:00", completedAt: "2026-01-09 12:20" },
-  { id: "7", taskName: "Task #7", status: "completed", injected: 420, dumped: 12345, duration: "2h 10m", startedAt: "2026-01-08 14:30", completedAt: "2026-01-08 16:40" },
-  { id: "8", taskName: "Task #8", status: "failed", injected: 80, dumped: 0, duration: "25m", startedAt: "2026-01-08 10:00", completedAt: "2026-01-08 10:25" },
-  { id: "9", taskName: "Task #9", status: "completed", injected: 780, dumped: 34567, duration: "3h 45m", startedAt: "2026-01-07 11:00", completedAt: "2026-01-07 14:45" },
-  { id: "10", taskName: "Task #10", status: "completed", injected: 560, dumped: 21098, duration: "2h 55m", startedAt: "2026-01-07 07:00", completedAt: "2026-01-07 09:55" },
-  { id: "11", taskName: "Task #11", status: "cancelled", injected: 200, dumped: 5600, duration: "1h 05m", startedAt: "2026-01-06 15:00", completedAt: "2026-01-06 16:05" },
-  { id: "12", taskName: "Task #12", status: "completed", injected: 920, dumped: 52340, duration: "5h 12m", startedAt: "2026-01-06 08:00", completedAt: "2026-01-06 13:12" },
-]
+type HistoryTotals = {
+  totaltasks: number
+  completed: number
+  failed: number
+  totaldumped: number
+}
 
-const statusConfig = {
+type HistoryPagination = {
+  page: number
+  page_size: number
+  total_items: number
+  total_pages: number
+  has_more: boolean
+}
+
+type HistorySnapshot = {
+  type: string
+  items: HistoryItem[]
+  totals: HistoryTotals
+  pagination: HistoryPagination
+  ts: number
+}
+
+const EMPTY_SNAPSHOT: HistorySnapshot = {
+  type: "history_snapshot",
+  items: [],
+  totals: {
+    totaltasks: 0,
+    completed: 0,
+    failed: 0,
+    totaldumped: 0,
+  },
+  pagination: {
+    page: 1,
+    page_size: 10,
+    total_items: 0,
+    total_pages: 1,
+    has_more: false,
+  },
+  ts: Date.now(),
+}
+
+const statusConfig: Record<HistoryStatus, { icon: React.ComponentType<{ size?: number; className?: string }>; label: string; color: string }> = {
   completed: { icon: IconCircleCheck, label: "Completed", color: "text-emerald-500" },
   failed: { icon: IconAlertTriangle, label: "Failed", color: "text-red-500" },
-  cancelled: { icon: IconClock, label: "Cancelled", color: "text-yellow-500" },
+  deleted: { icon: IconClock, label: "Deleted", color: "text-muted-foreground" },
 }
 
-// Stats calculation
-const stats = {
-  total: historyData.length,
-  completed: historyData.filter(h => h.status === "completed").length,
-  failed: historyData.filter(h => h.status === "failed").length,
-  totalDumped: historyData.reduce((acc, h) => acc + h.dumped, 0),
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }
 
-const columns: ColumnDef<HistoryData>[] = [
+function toText(value: unknown, fallback = ""): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : fallback
+  }
+  return fallback
+}
+
+function toInteger(value: unknown, fallback = 0): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0, Math.trunc(n))
+}
+
+function toStatus(value: unknown): HistoryStatus {
+  const v = toText(value).toLowerCase()
+  if (v === "completed" || v === "failed" || v === "deleted") return v
+  return "failed"
+}
+
+function formatDuration(ms: number): string {
+  const safe = Math.max(0, Math.trunc(ms))
+  if (safe < 1000) return "0s"
+  const totalSeconds = Math.floor(safe / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return `${minutes}m ${seconds}s`
+  const hours = Math.floor(minutes / 60)
+  const remMinutes = minutes % 60
+  return `${hours}h ${remMinutes}m`
+}
+
+function formatCompletedTime(value: string): string {
+  const ts = Date.parse(value)
+  if (!Number.isFinite(ts)) return "-"
+  return new Date(ts).toLocaleString()
+}
+
+function normalizeItems(input: unknown): HistoryItem[] {
+  if (!Array.isArray(input)) return []
+  return input.map((item) => {
+    const row = isRecord(item) ? item : {}
+    return {
+      taskid: toText(row.taskid),
+      taskname: toText(row.taskname, "Untitled Task"),
+      status: toStatus(row.status),
+      success: toInteger(row.success),
+      dumped: toInteger(row.dumped),
+      duration_ms: toInteger(row.duration_ms),
+      completed_time: toText(row.completed_time),
+    }
+  })
+}
+
+function normalizeTotals(input: unknown): HistoryTotals {
+  const row = isRecord(input) ? input : {}
+  return {
+    totaltasks: toInteger(row.totaltasks),
+    completed: toInteger(row.completed),
+    failed: toInteger(row.failed),
+    totaldumped: toInteger(row.totaldumped),
+  }
+}
+
+function normalizePagination(input: unknown, fallbackPage: number): HistoryPagination {
+  const row = isRecord(input) ? input : {}
+  const totalPages = Math.max(1, toInteger(row.total_pages, 1))
+  const page = Math.min(totalPages, Math.max(1, toInteger(row.page, fallbackPage)))
+  return {
+    page,
+    page_size: Math.max(1, toInteger(row.page_size, 10)),
+    total_items: toInteger(row.total_items),
+    total_pages: totalPages,
+    has_more: Boolean(row.has_more),
+  }
+}
+
+function normalizeSnapshot(input: unknown, fallbackPage: number): HistorySnapshot {
+  const row = isRecord(input) ? input : {}
+  return {
+    type: toText(row.type, "history_snapshot"),
+    items: normalizeItems(row.items),
+    totals: normalizeTotals(row.totals),
+    pagination: normalizePagination(row.pagination, fallbackPage),
+    ts: toInteger(row.ts, Date.now()),
+  }
+}
+
+const columns: ColumnDef<HistoryItem>[] = [
   {
-    accessorKey: "taskName",
+    accessorKey: "taskname",
     header: ({ column }) => (
       <Button
         variant="ghost"
@@ -106,7 +216,7 @@ const columns: ColumnDef<HistoryData>[] = [
       </Button>
     ),
     cell: ({ row }) => (
-      <span className="font-medium font-[family-name:var(--font-inter)]">{row.getValue("taskName")}</span>
+      <span className="font-medium font-[family-name:var(--font-inter)]">{row.getValue("taskname")}</span>
     ),
   },
   {
@@ -129,11 +239,11 @@ const columns: ColumnDef<HistoryData>[] = [
       </Button>
     ),
     cell: ({ row }) => {
-      const status = row.getValue("status") as keyof typeof statusConfig
-      const config = statusConfig[status]
+      const status = row.getValue("status") as HistoryStatus
+      const config = statusConfig[status] ?? statusConfig.failed
       const StatusIcon = config.icon
       return (
-        <Badge variant="outline" className="bg-transparent border-border">
+        <Badge variant="outline" className="border-border bg-transparent">
           <StatusIcon size={12} className={config.color} />
           <span className="text-foreground">{config.label}</span>
         </Badge>
@@ -141,7 +251,7 @@ const columns: ColumnDef<HistoryData>[] = [
     },
   },
   {
-    accessorKey: "injected",
+    accessorKey: "success",
     header: ({ column }) => (
       <Button
         variant="ghost"
@@ -149,7 +259,7 @@ const columns: ColumnDef<HistoryData>[] = [
         className="-ml-3 h-8"
         onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
       >
-        Injected
+        Success
         {column.getIsSorted() === "asc" ? (
           <IconSortAscending size={14} className="ml-1" />
         ) : column.getIsSorted() === "desc" ? (
@@ -161,7 +271,7 @@ const columns: ColumnDef<HistoryData>[] = [
     ),
     cell: ({ row }) => (
       <span className="font-[family-name:var(--font-jetbrains-mono)]">
-        {(row.getValue("injected") as number).toLocaleString()}
+        {(row.getValue("success") as number).toLocaleString()}
       </span>
     ),
   },
@@ -191,7 +301,7 @@ const columns: ColumnDef<HistoryData>[] = [
     ),
   },
   {
-    accessorKey: "duration",
+    accessorKey: "duration_ms",
     header: ({ column }) => (
       <Button
         variant="ghost"
@@ -210,13 +320,13 @@ const columns: ColumnDef<HistoryData>[] = [
       </Button>
     ),
     cell: ({ row }) => (
-      <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)]">
-        {row.getValue("duration")}
+      <span className="font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
+        {formatDuration(row.getValue("duration_ms") as number)}
       </span>
     ),
   },
   {
-    accessorKey: "completedAt",
+    accessorKey: "completed_time",
     header: ({ column }) => (
       <Button
         variant="ghost"
@@ -235,8 +345,8 @@ const columns: ColumnDef<HistoryData>[] = [
       </Button>
     ),
     cell: ({ row }) => (
-      <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)] text-sm">
-        {row.getValue("completedAt")}
+      <span className="font-[family-name:var(--font-jetbrains-mono)] text-sm text-muted-foreground">
+        {formatCompletedTime(row.getValue("completed_time"))}
       </span>
     ),
   },
@@ -250,14 +360,12 @@ const columns: ColumnDef<HistoryData>[] = [
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem>
+          <DropdownMenuItem
+            disabled
+            className="cursor-not-allowed text-muted-foreground focus:text-muted-foreground"
+          >
             <IconDownload size={14} className="mr-2" />
-            Download
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-red-500">
-            <IconTrash size={14} className="mr-2" />
-            Delete
+            Export (Unavailable now)
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -266,40 +374,103 @@ const columns: ColumnDef<HistoryData>[] = [
 ]
 
 export function HistoryContent() {
-  const [pagination, setPagination] = React.useState({
-    pageIndex: 0,
-    pageSize: 10,
-  })
+  const [snapshot, setSnapshot] = React.useState<HistorySnapshot>(EMPTY_SNAPSHOT)
+  const [isLoading, setIsLoading] = React.useState(true)
   const [sorting, setSorting] = React.useState<SortingState>([
-    { id: "completedAt", desc: true }
+    { id: "completed_time", desc: true },
   ])
+  const [page, setPage] = React.useState(1)
+
+  const getAccessToken = React.useCallback(async () => {
+    const { createClient } = await import("@/lib/supabase/client")
+    const supabase = createClient()
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    return session?.access_token || null
+  }, [])
+
+  const fetchHistory = React.useCallback(async (nextPage: number) => {
+    const token = await getAccessToken()
+    if (!token) {
+      throw new Error("No access token")
+    }
+
+    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+    const url = new URL(`${externalApiDomain}/history`)
+    url.searchParams.set("page", String(Math.max(1, nextPage)))
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`History request failed (HTTP ${response.status})`)
+    }
+
+    const normalized = normalizeSnapshot(await response.json(), nextPage)
+    setSnapshot(normalized)
+    if (normalized.pagination.page !== nextPage) {
+      setPage(normalized.pagination.page)
+    }
+  }, [getAccessToken])
+
+  React.useEffect(() => {
+    let cancelled = false
+
+    const run = async () => {
+      setIsLoading(true)
+      try {
+        await fetchHistory(page)
+      } catch (error) {
+        console.error("[History] fetch failed:", error)
+        if (!cancelled) {
+          toast.error("Failed to load history")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [fetchHistory, page])
 
   const table = useReactTable({
-    data: historyData,
+    data: snapshot.items,
     columns,
     state: {
-      pagination,
       sorting,
     },
-    onPaginationChange: setPagination,
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
   })
 
+  const totals = snapshot.totals
+  const paging = snapshot.pagination
+
   return (
-    <div className="flex flex-1 flex-col min-w-0 p-6 font-[family-name:var(--font-inter)]">
-      {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4 mb-6">
+    <div className="flex min-w-0 flex-1 flex-col p-6 font-[family-name:var(--font-inter)]">
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
         <Card className="rounded-xl">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Total Tasks</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{stats.total}</p>
+                <p className="font-[family-name:var(--font-jetbrains-mono)] text-2xl font-bold">
+                  {totals.totaltasks.toLocaleString()}
+                </p>
               </div>
-              <div className="p-2 rounded-lg bg-blue-500/10">
+              <div className="rounded-lg bg-blue-500/10 p-2">
                 <IconCalendar className="size-5 text-blue-500" />
               </div>
             </div>
@@ -311,9 +482,11 @@ export function HistoryContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Completed</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{stats.completed}</p>
+                <p className="font-[family-name:var(--font-jetbrains-mono)] text-2xl font-bold">
+                  {totals.completed.toLocaleString()}
+                </p>
               </div>
-              <div className="p-2 rounded-lg bg-emerald-500/10">
+              <div className="rounded-lg bg-emerald-500/10 p-2">
                 <IconCircleCheck className="size-5 text-emerald-500" />
               </div>
             </div>
@@ -325,9 +498,11 @@ export function HistoryContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Failed</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{stats.failed}</p>
+                <p className="font-[family-name:var(--font-jetbrains-mono)] text-2xl font-bold">
+                  {totals.failed.toLocaleString()}
+                </p>
               </div>
-              <div className="p-2 rounded-lg bg-red-500/10">
+              <div className="rounded-lg bg-red-500/10 p-2">
                 <IconAlertTriangle className="size-5 text-red-500" />
               </div>
             </div>
@@ -339,11 +514,11 @@ export function HistoryContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Total Dumped</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">
-                  {stats.totalDumped.toLocaleString()}
+                <p className="font-[family-name:var(--font-jetbrains-mono)] text-2xl font-bold">
+                  {totals.totaldumped.toLocaleString()}
                 </p>
               </div>
-              <div className="p-2 rounded-lg bg-purple-500/10">
+              <div className="rounded-lg bg-purple-500/10 p-2">
                 <IconDownload className="size-5 text-purple-500" />
               </div>
             </div>
@@ -351,45 +526,39 @@ export function HistoryContent() {
         </Card>
       </div>
 
-      {/* History Table */}
-      <div className="rounded-lg border overflow-hidden">
+      <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id} className="bg-muted/50">
                 {headerGroup.headers.map((header) => (
                   <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
+                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
                   </TableHead>
                 ))}
               </TableRow>
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows?.length ? (
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="h-24 text-center text-muted-foreground">
+                  Loading history...
+                </TableCell>
+              </TableRow>
+            ) : table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map((row) => (
                 <TableRow key={row.id}>
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>
                   ))}
                 </TableRow>
               ))
             ) : (
               <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className="h-24 text-center"
-                >
+                <TableCell colSpan={columns.length} className="h-24 text-center">
                   No history found.
                 </TableCell>
               </TableRow>
@@ -398,18 +567,17 @@ export function HistoryContent() {
         </Table>
       </div>
 
-      {/* Pagination */}
       <div className="flex items-center justify-between py-4">
         <div className="text-sm text-muted-foreground">
-          Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+          Page {paging.page} of {paging.total_pages}
         </div>
         <div className="flex items-center gap-1">
           <Button
             variant="outline"
             size="icon"
             className="size-7"
-            onClick={() => table.previousPage()}
-            disabled={!table.getCanPreviousPage()}
+            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            disabled={isLoading || paging.page <= 1}
           >
             <IconChevronLeft className="size-3" />
           </Button>
@@ -417,8 +585,8 @@ export function HistoryContent() {
             variant="outline"
             size="icon"
             className="size-7"
-            onClick={() => table.nextPage()}
-            disabled={!table.getCanNextPage()}
+            onClick={() => setPage((prev) => prev + 1)}
+            disabled={isLoading || !paging.has_more}
           >
             <IconChevronRight className="size-3" />
           </Button>

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useRouter } from "next/navigation"
 import {
   IconPlus,
   IconCircleCheck,
@@ -316,6 +317,7 @@ const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
 ]
 
 export function TasksContent() {
+  const router = useRouter()
   const [isLoading, setIsLoading] = React.useState(true)
   const [tasksData, setTasksData] = React.useState<Task[]>([])
   const [maxTasks, setMaxTasks] = React.useState(0)
@@ -700,6 +702,7 @@ export function TasksContent() {
       setInjectionTimebased(false)
       // Some backends close user SSE after task creation; force a clean reconnect.
       setUserSseReconnectNonce((prev) => prev + 1)
+      router.refresh()
     } catch (error) {
       console.error('Create task error:', error)
       toast.error(error instanceof Error ? error.message : "Failed to create task")
