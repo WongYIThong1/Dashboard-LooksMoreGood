@@ -72,6 +72,7 @@ import {
 import { toast } from "sonner"
 
 type TaskStatus = "pending" | "running_recon" | "running" | "paused" | "complete" | "failed"
+type UiStatus = "pending" | "running" | "complete"
 
 type UrlsFile = { id: string; name: string; type?: string }
 
@@ -80,6 +81,7 @@ interface Task {
   name: string
   status: TaskStatus
   found: number
+  etaSeconds: number
   targetTotal: number | null
   remaining: number | null
   progressPercent: number
@@ -100,13 +102,41 @@ interface ApiTask {
   started_time: string | null
 }
 
+interface UserTaskSummary {
+  type?: string
+  taskid?: string
+  taskname?: string
+  status?: string
+  success?: number
+  websites_done?: number
+  websites_total?: number
+  eta_seconds?: number
+  progress?: string
+  progress_ratio?: number
+  remaining?: number
+  remainng?: number
+  updated_at?: string
+}
+
+interface UserSnapshotEvent {
+  type?: string
+  tasks?: UserTaskSummary[]
+  count?: number
+  limit?: number
+  ts?: number
+}
+
+interface UserTaskUpdateEvent {
+  type?: string
+  task?: UserTaskSummary
+  reason?: "start" | "stats" | "task_done" | "delete" | string
+  ts?: number
+}
+
 const statusConfig = {
-  pending: { icon: IconClock, label: "Pending", dotClass: "bg-zinc-400" },
-  running_recon: { icon: IconLoader2, label: "Running recon", dotClass: "bg-zinc-900 dark:bg-zinc-100" },
-  running: { icon: IconLoader2, label: "Running", dotClass: "bg-zinc-900 dark:bg-zinc-100" },
-  paused: { icon: IconClock, label: "Paused", dotClass: "bg-zinc-500" },
-  complete: { icon: IconCircleCheck, label: "Complete", dotClass: "bg-emerald-500" },
-  failed: { icon: IconAlertCircle, label: "Failed", dotClass: "bg-rose-500" },
+  pending: { icon: IconClock, label: "Pending", dotClass: "bg-yellow-500" },
+  running: { icon: IconLoader2, label: "Running", dotClass: "bg-blue-500" },
+  complete: { icon: IconCircleCheck, label: "Completed", dotClass: "bg-emerald-500" },
 }
 
 function InjectableIcon() {
@@ -128,6 +158,60 @@ function InjectableIcon() {
   )
 }
 
+function normalizeTaskStatus(value: string | undefined): TaskStatus | "deleted" {
+  const raw = (value || "").trim().toLowerCase()
+  if (raw === "deleted" || raw === "delete") return "deleted"
+  if (raw === "completed" || raw === "complete") return "complete"
+  if (raw === "failed") return "failed"
+  if (raw === "paused") return "paused"
+  if (raw === "running_recon") return "running_recon"
+  if (raw === "running") return "running"
+  return "pending"
+}
+
+function toUiStatus(status: TaskStatus): UiStatus {
+  if (status === "running" || status === "running_recon") return "running"
+  if (status === "complete") return "complete"
+  return "pending"
+}
+
+function formatEtaLabel(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds))
+  const mins = Math.floor(safe / 60)
+  const secs = safe % 60
+  if (mins >= 60) {
+    const hours = Math.floor(mins / 60)
+    const remMins = mins % 60
+    return `${hours}h ${remMins}m`
+  }
+  return `${mins}m ${secs}s`
+}
+
+function EtaCountdown({ etaSeconds, status }: { etaSeconds: number; status: TaskStatus }) {
+  const [displaySeconds, setDisplaySeconds] = React.useState(Math.max(0, Math.trunc(etaSeconds || 0)))
+
+  React.useEffect(() => {
+    setDisplaySeconds(Math.max(0, Math.trunc(etaSeconds || 0)))
+  }, [etaSeconds])
+
+  React.useEffect(() => {
+    if (status !== "running" && status !== "running_recon") return
+    if (!Number.isFinite(displaySeconds) || displaySeconds <= 0) return
+
+    const timer = window.setInterval(() => {
+      setDisplaySeconds((prev) => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [displaySeconds, status])
+
+  if (!Number.isFinite(displaySeconds) || displaySeconds <= 0) {
+    return <span className="font-mono text-xs text-muted-foreground">--</span>
+  }
+
+  return <span className="font-mono text-xs text-muted-foreground">{formatEtaLabel(displaySeconds)}</span>
+}
+
 const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
   {
     accessorKey: "name",
@@ -146,14 +230,15 @@ const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
     accessorKey: "status",
     header: "Status",
     cell: ({ row }) => {
-      const status = row.getValue("status") as string
-      const config = statusConfig[status as TaskStatus] || statusConfig.pending
+      const rawStatus = row.getValue("status") as TaskStatus
+      const uiStatus = toUiStatus(rawStatus)
+      const config = statusConfig[uiStatus]
       const StatusIcon = config.icon
       return (
         <Badge variant="outline" className="h-5 gap-1 bg-transparent px-1.5 py-0 text-[11px]">
           <span className={`size-1.5 rounded-full ${config.dotClass}`} />
           <span className="text-foreground">{config.label}</span>
-          {(status === "running" || status === "running_recon") && (
+          {uiStatus === "running" && (
             <StatusIcon size={12} className="text-muted-foreground animate-spin" />
           )}
         </Badge>
@@ -193,6 +278,11 @@ const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
         {row.original.remaining === null ? "-" : row.original.remaining}
       </span>
     ),
+  },
+  {
+    id: "eta",
+    header: "ETA",
+    cell: ({ row }) => <EtaCountdown etaSeconds={row.original.etaSeconds} status={row.original.status} />,
   },
   {
     id: "actions",
@@ -239,9 +329,10 @@ export function TasksContent() {
   const [selectedFileId, setSelectedFileId] = React.useState("")
   const [preset, setPreset] = React.useState("")
   const [query, setQuery] = React.useState("")
-  const [statusFilter, setStatusFilter] = React.useState<"all" | TaskStatus>("all")
+  const [statusFilter, setStatusFilter] = React.useState<"all" | UiStatus>("all")
   const [createAdvanced, setCreateAdvanced] = React.useState<string[]>([])
   const aiMode = true
+  const [userSseReconnectNonce, setUserSseReconnectNonce] = React.useState(0)
 
   React.useEffect(() => {
     if (!showCreateDialog) setCreateAdvanced([])
@@ -261,9 +352,82 @@ export function TasksContent() {
   const [injectionBoolean, setInjectionBoolean] = React.useState(false)
   const [injectionTimebased, setInjectionTimebased] = React.useState(false)
   const hasLoadedFilesRef = React.useRef(false)
+  const userSseAbortRef = React.useRef<AbortController | null>(null)
+  const userSseRetryTimerRef = React.useRef<number | null>(null)
+  const userSseRetryCountRef = React.useRef(0)
+  const userLastEventIdRef = React.useRef("")
+
+  const mapUserSummaryToTask = React.useCallback(
+    (summary: UserTaskSummary, existing?: Task): Task | null => {
+      const id = (summary.taskid || "").trim()
+      if (!id) return null
+
+      const normalizedStatus = normalizeTaskStatus(summary.status)
+      if (normalizedStatus === "deleted") return null
+
+      const doneRaw = Number(summary.websites_done ?? 0)
+      const done = Number.isFinite(doneRaw) ? Math.max(0, Math.trunc(doneRaw)) : 0
+      const totalRaw = Number(summary.websites_total ?? NaN)
+      const total = Number.isFinite(totalRaw) && totalRaw >= 0 ? Math.trunc(totalRaw) : null
+      const ratioRaw = Number(summary.progress_ratio ?? NaN)
+      const ratio =
+        Number.isFinite(ratioRaw) && ratioRaw >= 0 ? Math.max(0, Math.min(1, ratioRaw)) : (total && total > 0 ? done / total : 0)
+      const progressPercent = Math.max(0, Math.min(100, Math.round(ratio * 100)))
+
+      const remainingFromPayload =
+        typeof summary.remaining === "number"
+          ? summary.remaining
+          : typeof summary.remainng === "number"
+            ? summary.remainng
+            : null
+      const remaining =
+        remainingFromPayload !== null && Number.isFinite(remainingFromPayload)
+          ? Math.max(0, Math.trunc(remainingFromPayload))
+          : total !== null
+            ? Math.max(0, total - done)
+            : existing?.remaining ?? null
+
+      const successRaw = Number(summary.success ?? NaN)
+      const found = Number.isFinite(successRaw) ? Math.max(0, Math.trunc(successRaw)) : existing?.found ?? 0
+      const etaRaw = Number(summary.eta_seconds ?? NaN)
+      const etaSeconds = Number.isFinite(etaRaw) ? Math.max(0, Math.trunc(etaRaw)) : existing?.etaSeconds ?? 0
+
+      return {
+        id,
+        name: (summary.taskname || existing?.name || "Untitled Task").trim(),
+        status: normalizedStatus,
+        found,
+        etaSeconds,
+        targetTotal: total ?? existing?.targetTotal ?? null,
+        remaining,
+        progressPercent,
+        target: existing?.target ?? (total !== null ? String(total) : null),
+        file: existing?.file || "-",
+        started: existing?.started || "-",
+        startedTime: existing?.startedTime || "-",
+        isRunning: normalizedStatus === "running" || normalizedStatus === "running_recon",
+      }
+    },
+    []
+  )
 
   React.useEffect(() => {
-    fetchTasks()
+    const fetchSettings = async () => {
+      try {
+        const response = await fetch("/api/settings", { method: "GET" })
+        const data = await response.json()
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to fetch user info")
+        }
+        setUserPlan(data.plan || "Free")
+        setMaxTasks(data.max_tasks || 0)
+      } catch (error) {
+        console.error("Failed to load settings:", error)
+        setUserPlan("Free")
+        setMaxTasks(0)
+      }
+    }
+    void fetchSettings()
   }, [])
 
   // Fetch files when dialog opens
@@ -300,6 +464,170 @@ export function TasksContent() {
       setIsLoadingFiles(false)
     }
   }
+
+  const getAccessToken = React.useCallback(async () => {
+    const { createClient } = await import("@/lib/supabase/client")
+    const supabase = createClient()
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    return session?.access_token || null
+  }, [])
+
+  React.useEffect(() => {
+    let cancelled = false
+
+    const cleanupRetryTimer = () => {
+      if (userSseRetryTimerRef.current) {
+        window.clearTimeout(userSseRetryTimerRef.current)
+        userSseRetryTimerRef.current = null
+      }
+    }
+
+    const scheduleReconnect = () => {
+      if (cancelled) return
+      cleanupRetryTimer()
+      const retry = userSseRetryCountRef.current + 1
+      userSseRetryCountRef.current = retry
+      const delay = Math.min(30000, 1000 * 2 ** Math.min(retry, 5))
+      userSseRetryTimerRef.current = window.setTimeout(() => {
+        void connectUserSSE()
+      }, delay)
+    }
+
+    const dispatchSSEEvent = (raw: string, eventName: string) => {
+      if (!raw) return
+      try {
+        const parsed = JSON.parse(raw)
+        const type = parsed?.type || eventName
+        if (type === "user_snapshot") {
+          const event = parsed as UserSnapshotEvent
+          const tasks = Array.isArray(event.tasks) ? event.tasks : []
+          setTasksData((prev) => {
+            const byId = new Map(prev.map((item) => [item.id, item]))
+            return tasks
+              .map((summary) => mapUserSummaryToTask(summary, byId.get((summary.taskid || "").trim())))
+              .filter((item): item is Task => !!item)
+          })
+          setIsLoading(false)
+        } else if (type === "task_update") {
+          const event = parsed as UserTaskUpdateEvent
+          const summary = event.task
+          if (!summary?.taskid) return
+          const taskId = summary.taskid.trim()
+          setTasksData((prev) => {
+            if ((event.reason || "").toLowerCase() === "delete" || normalizeTaskStatus(summary.status) === "deleted") {
+              return prev.filter((item) => item.id !== taskId)
+            }
+            const idx = prev.findIndex((item) => item.id === taskId)
+            const mapped = mapUserSummaryToTask(summary, idx >= 0 ? prev[idx] : undefined)
+            if (!mapped) return prev.filter((item) => item.id !== taskId)
+            if (idx >= 0) {
+              const next = [...prev]
+              next[idx] = { ...next[idx], ...mapped }
+              return next
+            }
+            return [mapped, ...prev]
+          })
+          setIsLoading(false)
+        }
+      } catch (error) {
+        console.error("[User SSE] parse error:", error, raw)
+      }
+    }
+
+    const connectUserSSE = async () => {
+      if (cancelled) return
+      try {
+        userSseAbortRef.current?.abort()
+        const controller = new AbortController()
+        userSseAbortRef.current = controller
+
+        const token = await getAccessToken()
+        if (!token) {
+          scheduleReconnect()
+          return
+        }
+
+        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+        const url = new URL(`${externalApiDomain}/sse/user`)
+        if (userLastEventIdRef.current) {
+          url.searchParams.set("since", userLastEventIdRef.current)
+        }
+
+        const response = await fetch(url.toString(), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "text/event-stream",
+          },
+          signal: controller.signal,
+        })
+
+        if (!response.ok || !response.body) {
+          scheduleReconnect()
+          return
+        }
+
+        userSseRetryCountRef.current = 0
+        setIsLoading(false)
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        let currentEvent = ""
+        let currentId = ""
+        let dataLines: string[] = []
+
+        while (!cancelled) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() || ""
+
+          for (const line of lines) {
+            if (line === "") {
+              const payload = dataLines.join("\n").trim()
+              if (currentId) userLastEventIdRef.current = currentId
+              if (payload) dispatchSSEEvent(payload, currentEvent || "message")
+              currentEvent = ""
+              currentId = ""
+              dataLines = []
+              continue
+            }
+            if (line.startsWith(":")) continue
+            if (line.startsWith("id:")) {
+              currentId = line.slice(3).trim()
+              continue
+            }
+            if (line.startsWith("event:")) {
+              currentEvent = line.slice(6).trim()
+              continue
+            }
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trimStart())
+            }
+          }
+        }
+
+        if (!cancelled) scheduleReconnect()
+      } catch (error) {
+        if (!cancelled) {
+          console.error("[User SSE] connection error:", error)
+          scheduleReconnect()
+        }
+      }
+    }
+
+    void connectUserSSE()
+
+    return () => {
+      cancelled = true
+      cleanupRetryTimer()
+      userSseAbortRef.current?.abort()
+      userSseAbortRef.current = null
+    }
+  }, [getAccessToken, mapUserSummaryToTask, userSseReconnectNonce])
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -370,109 +698,13 @@ export function TasksContent() {
       setInjectionError(true)
       setInjectionBoolean(false)
       setInjectionTimebased(false)
-      
-      // 刷新任务列表
-      fetchTasks()
+      // Some backends close user SSE after task creation; force a clean reconnect.
+      setUserSseReconnectNonce((prev) => prev + 1)
     } catch (error) {
       console.error('Create task error:', error)
       toast.error(error instanceof Error ? error.message : "Failed to create task")
     } finally {
       setIsCreating(false)
-    }
-  }
-
-  const formatTimeAgo = (dateString: string | null | undefined): string => {
-    if (!dateString) return "-"
-    const date = new Date(dateString)
-    if (isNaN(date.getTime())) return "-"
-    
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffSecs = Math.floor(diffMs / 1000)
-    const diffMins = Math.floor(diffSecs / 60)
-    const diffHours = Math.floor(diffMins / 60)
-    const diffDays = Math.floor(diffHours / 24)
-
-    if (diffSecs < 60) return `${diffSecs}s`
-    if (diffMins < 60) return `${diffMins}m ${diffSecs % 60}s`
-    if (diffHours < 24) return `${diffHours}h ${diffMins % 60}m`
-    return `${diffDays}d ${diffHours % 24}h`
-  }
-
-  const formatStartedTime = (dateString: string | null | undefined): string => {
-    if (!dateString) return "-"
-    const date = new Date(dateString)
-    if (isNaN(date.getTime())) return "-"
-    
-    return date.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    })
-  }
-
-  const fetchTasks = async () => {
-    setIsLoading(true)
-    try {
-      // Run in parallel to reduce initial page wait time.
-      const [settingsResponse, tasksResponse] = await Promise.all([
-        fetch('/api/settings', { method: 'GET' }),
-        fetch('/api/v1/tasks', { method: 'GET' }),
-      ])
-      const [settingsData, tasksData] = await Promise.all([
-        settingsResponse.json(),
-        tasksResponse.json(),
-      ])
-
-      if (!settingsResponse.ok) {
-        throw new Error(settingsData.error || 'Failed to fetch user info')
-      }
-
-      // 设置用户计划和任务限制
-      setUserPlan(settingsData.plan || 'Free')
-      setMaxTasks(settingsData.max_tasks || 0)
-
-      if (!tasksResponse.ok) {
-        throw new Error(tasksData.error || 'Failed to fetch tasks')
-      }
-
-      // Transform API data to match frontend format
-      const transformedTasks: Task[] = (tasksData.tasks || []).map((task: ApiTask) => {
-        const isRunning = task.status === 'running' || task.status === 'running_recon'
-        const found = Math.max(0, Math.trunc(Number(task.found || 0)))
-        const parsedTarget = Number(task.target ?? NaN)
-        const targetTotal =
-          Number.isFinite(parsedTarget) && parsedTarget >= 0 ? Math.trunc(parsedTarget) : null
-        const remaining = targetTotal === null ? null : Math.max(0, targetTotal - found)
-        const progressPercent =
-          targetTotal !== null && targetTotal > 0 ? Math.max(0, Math.min(100, Math.round((found / targetTotal) * 100))) : 0
-        return {
-          id: task.id,
-          name: task.name,
-          status: task.status as TaskStatus,
-          found,
-          targetTotal,
-          remaining,
-          progressPercent,
-          target: task.target,
-          file: task.file,
-          started: formatTimeAgo(task.started_time),
-          startedTime: task.started_time || '-',
-          isRunning,
-        }
-      })
-
-      setTasksData(transformedTasks)
-    } catch (error) {
-      console.error('Failed to load tasks:', error)
-      toast.error("Please Try Again")
-      setTasksData([])
-      setMaxTasks(0)
-      setUserPlan('Free')
-    } finally {
-      setIsLoading(false)
     }
   }
 
@@ -493,7 +725,6 @@ export function TasksContent() {
 
       toast.success("Task deleted")
       setTasksData((prev) => prev.filter((item) => item.id !== task.id))
-      fetchTasks()
     } catch (error) {
       console.error("Delete task error:", error)
       toast.error(error instanceof Error ? error.message : "Failed to delete task")
@@ -503,7 +734,7 @@ export function TasksContent() {
   const filteredTasks = React.useMemo(() => {
     const q = query.trim().toLowerCase()
     return tasksData.filter((t) => {
-      if (statusFilter !== "all" && t.status !== statusFilter) return false
+      if (statusFilter !== "all" && toUiStatus(t.status) !== statusFilter) return false
       if (!q) return true
       return (
         t.name.toLowerCase().includes(q) ||
@@ -610,11 +841,8 @@ export function TasksContent() {
                 <SelectContent>
                   <SelectItem value="all">All statuses</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="running_recon">Running recon</SelectItem>
                   <SelectItem value="running">Running</SelectItem>
-                  <SelectItem value="paused">Paused</SelectItem>
-                  <SelectItem value="complete">Complete</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="complete">Completed</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -641,7 +869,8 @@ export function TasksContent() {
                               header.column.id === "name" ? "w-[38%]" : "",
                               header.column.id === "status" ? "w-[18%]" : "",
                               header.column.id === "found" ? "w-[10%]" : "",
-                              header.column.id === "progress" ? "w-[18%]" : "",
+                              header.column.id === "progress" ? "w-[16%]" : "",
+                              header.column.id === "eta" ? "w-[10%]" : "",
                               header.column.id === "remaining" ? "w-[10%]" : "",
                               header.column.id === "actions" ? "w-[6%]" : "",
                             ].join(" ")}

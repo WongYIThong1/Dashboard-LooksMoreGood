@@ -160,6 +160,7 @@ interface ResultsBatchSSEPayload {
     country?: string
     category?: string
     waf?: boolean
+    waftech?: string | null
     created_at?: string
   }>
 }
@@ -207,6 +208,7 @@ interface SnapshotResponse {
   task_id: string
   status: string
   stats?: Partial<StatsSSEPayload>
+  dump_snapshot?: Partial<DumperStatsSSEPayload> | Record<string, never>
   injection_items?: Array<{
     domain?: string
     country?: string
@@ -549,6 +551,120 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       percentDone: number
     }>
   >([])
+
+  const normalizeDumpRowsFromDomains = React.useCallback(
+    (domains: DumperStatsSSEPayload["domains"], keyPrefix: string) => {
+      const safeDomains = Array.isArray(domains) ? domains : []
+      return safeDomains
+        .filter((item) => item.domain && item.domain.trim().length > 0)
+        .map((item, idx) => {
+          const domain = (item.domain || "-").trim()
+          const country = (item.country || "-").trim() || "-"
+          const category = (item.category || "-").trim() || "-"
+          const totalRaw = typeof item.total === "number" && Number.isFinite(item.total) ? Math.max(0, Math.trunc(item.total)) : 0
+          const progressRaw =
+            typeof item.progress === "number" && Number.isFinite(item.progress) ? Math.max(0, Math.trunc(item.progress)) : 0
+          const progress = totalRaw > 0 ? Math.min(progressRaw, totalRaw) : progressRaw
+          const total = totalRaw
+
+          const parsedRows =
+            typeof item.rows === "number"
+              ? Math.max(0, Math.trunc(item.rows))
+              : Math.max(0, Math.trunc(Number(item.rows ?? 0)))
+          const rows = Number.isFinite(parsedRows) ? parsedRows : 0
+
+          const statusText = (item.status || "").trim()
+          // Some backends only send `status: "x/y"` without explicit progress/total fields.
+          // Parse it as a fallback so UI still updates.
+          let effectiveProgress = progress
+          let effectiveTotal = total
+          if ((!Number.isFinite(effectiveTotal) || effectiveTotal <= 0) && statusText.includes("/")) {
+            const match = statusText.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/)
+            if (match) {
+              effectiveProgress = Math.max(0, Math.trunc(Number(match[1] || 0)))
+              effectiveTotal = Math.max(0, Math.trunc(Number(match[2] || 0)))
+            }
+          }
+
+          const statusLower = statusText.toLowerCase()
+          const isDumped = statusLower === "dumped" || (effectiveTotal > 0 && effectiveProgress >= effectiveTotal)
+
+          const rawPercent = effectiveTotal > 0 ? (effectiveProgress / effectiveTotal) * 100 : 0
+          const percentDone = !isDumped
+            ? Math.max(
+                0,
+                Math.min(
+                  100,
+                  // Avoid "stuck at 0%" when progress has started but is <0.5%.
+                  effectiveProgress > 0 && rawPercent > 0 && rawPercent < 1 ? 1 : Math.round(rawPercent)
+                )
+              )
+            : 100
+
+          return {
+            key: `${keyPrefix}-${idx}-${domain}`,
+            domain,
+            country,
+            category,
+            rows: rows > 0 ? rows : total,
+            statusKind: isDumped ? ("dumped" as const) : ("progress" as const),
+            statusLabel: isDumped
+              ? "Dumped"
+              : effectiveTotal > 0
+                ? `${effectiveProgress.toLocaleString()}/${effectiveTotal.toLocaleString()}`
+                : statusText,
+            percentDone: isDumped ? 100 : percentDone,
+          }
+        })
+    },
+    []
+  )
+
+  const applyDumpSnapshot = React.useCallback(
+    (dumpSnapshot?: SnapshotResponse["dump_snapshot"]) => {
+      if (!dumpSnapshot || typeof dumpSnapshot !== "object") return
+
+      const payload = dumpSnapshot as Partial<DumperStatsSSEPayload>
+      const domains = Array.isArray(payload.domains) ? payload.domains : []
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[Snapshot] 🧪 dump_snapshot payload:", {
+          type: payload.type,
+          preset: payload.preset,
+          dump: payload.dump,
+          dumped: payload.dumped,
+          domains: domains.length,
+          preview: domains.slice(0, 5).map((item) => ({
+            domain: item.domain,
+            country: item.country,
+            category: item.category,
+            rows: item.rows,
+            progress: item.progress,
+            total: item.total,
+            status: item.status,
+            success: item.success,
+          })),
+        })
+      }
+
+      if (typeof payload.dump === "number" && Number.isFinite(payload.dump)) {
+        const nextDump = Math.max(0, Math.trunc(payload.dump))
+        setSseDumpCount((prev) => (nextDump > prev ? nextDump : prev))
+      }
+      if (typeof payload.dumped === "number" && Number.isFinite(payload.dumped)) {
+        const nextDumped = Math.max(0, Math.trunc(payload.dumped))
+        setSseDumpedCount((prev) => (nextDumped > prev ? nextDumped : prev))
+      }
+
+      if (domains.length > 0) {
+        const incoming = normalizeDumpRowsFromDomains(domains, `snapshot-${Date.now()}`)
+        if (incoming.length > 0) {
+          setSseDumpRows((prev) => (prev.length > 0 ? prev : incoming))
+          setDumpsHydrated(true)
+        }
+      }
+    },
+    [normalizeDumpRowsFromDomains]
+  )
 
   // ETA countdown (UI-only). Synced from stats eta_seconds and ticks down locally.
   const [etaCountdownSeconds, setEtaCountdownSeconds] = React.useState<number | null>(null)
@@ -1034,9 +1150,11 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 		        const data = (await response.json()) as SnapshotResponse
 		        console.log("[Snapshot] ✅ stats-only payload:", {
 		          hasStats: !!data.stats,
+		          hasDumpSnapshot: !!(data.dump_snapshot && typeof data.dump_snapshot === "object" && Object.keys(data.dump_snapshot).length > 0),
 		          last_event_id: data.last_event_id,
 		        })
 		        if (data.stats) applyStatsPayload(data.stats)
+		        applyDumpSnapshot(data.dump_snapshot)
 		        if (data.last_event_id) lastEventIdRef.current = data.last_event_id
 		      } catch (e) {
 		        console.warn("[Snapshot] stats-only fetch failed:", e)
@@ -1396,7 +1514,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
       const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
       const sseUrlBuilder = new URL(`${externalApiDomain}/sse/${id}`)
-      // Query fallback (older servers). Primary compensation is via Last-Event-ID header below.
+      // Resume with query param for widest compatibility (no custom CORS header required).
       if (lastEventIdRef.current) sseUrlBuilder.searchParams.set("since", lastEventIdRef.current)
       const sseUrl = sseUrlBuilder.toString()
       
@@ -1539,7 +1657,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                      domain: (item.domain || "-").trim(),
 	                      country: (item.country || "-").trim() || "-",
 	                      category: (item.category || "-").trim() || "-",
-	                      waf: !!item.waf,
+	                      // WAF badge is driven by waftech presence.
+	                      waf: typeof item.waftech === "string" && item.waftech.trim().length > 0,
 	                    }))
 
 	                  const merged = [...incomingRows, ...prev]
@@ -1549,7 +1668,6 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                    const sig = `${row.domain}|${row.country}|${row.category}`
 	                    const existingIndex = indexBySig.get(sig)
 	                    if (existingIndex !== undefined) {
-	                      if (row.waf) deduped[existingIndex] = { ...deduped[existingIndex], waf: true }
 	                      continue
 	                    }
 	                    indexBySig.set(sig, deduped.length)
@@ -1579,68 +1697,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 setDumpsHydrated(true)
                 setSseDumpRows((prev) => {
                   const nowKey = currentEventId || Date.now().toString()
-                  const incoming = domains
-                    .filter((item) => item.domain && item.domain.trim().length > 0)
-                    .map((item, idx) => {
-                      const domain = (item.domain || "-").trim()
-                      const country = (item.country || "-").trim() || "-"
-                      const category = (item.category || "-").trim() || "-"
-                      const totalRaw = typeof item.total === "number" && Number.isFinite(item.total) ? Math.max(0, Math.trunc(item.total)) : 0
-                      const progressRaw =
-                        typeof item.progress === "number" && Number.isFinite(item.progress) ? Math.max(0, Math.trunc(item.progress)) : 0
-                      const progress = totalRaw > 0 ? Math.min(progressRaw, totalRaw) : progressRaw
-                      const total = totalRaw
-
-                      const parsedRows =
-                        typeof item.rows === "number"
-                          ? Math.max(0, Math.trunc(item.rows))
-                          : Math.max(0, Math.trunc(Number(item.rows ?? 0)))
-                      const rows = Number.isFinite(parsedRows) ? parsedRows : 0
-
-                      const statusText = (item.status || "").trim()
-                      // Some backends only send `status: "x/y"` without explicit progress/total fields.
-                      // Parse it as a fallback so UI still updates.
-                      let effectiveProgress = progress
-                      let effectiveTotal = total
-                      if ((!Number.isFinite(effectiveTotal) || effectiveTotal <= 0) && statusText.includes("/")) {
-                        const match = statusText.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/)
-                        if (match) {
-                          effectiveProgress = Math.max(0, Math.trunc(Number(match[1] || 0)))
-                          effectiveTotal = Math.max(0, Math.trunc(Number(match[2] || 0)))
-                        }
-                      }
-
-                      const statusLower = statusText.toLowerCase()
-                      const isDumped =
-                        statusLower === "dumped" || (effectiveTotal > 0 && effectiveProgress >= effectiveTotal)
-
-                      const rawPercent = effectiveTotal > 0 ? (effectiveProgress / effectiveTotal) * 100 : 0
-                      const percentDone = !isDumped
-                        ? Math.max(
-                            0,
-                            Math.min(
-                              100,
-                              // Avoid "stuck at 0%" when progress has started but is <0.5%.
-                              effectiveProgress > 0 && rawPercent > 0 && rawPercent < 1 ? 1 : Math.round(rawPercent)
-                            )
-                          )
-                        : 100
-
-                      return {
-                        key: `${nowKey}-${idx}-${domain}`,
-                        domain,
-                        country,
-                        category,
-                        rows: rows > 0 ? rows : total,
-                        statusKind: isDumped ? ("dumped" as const) : ("progress" as const),
-                        statusLabel: isDumped
-                          ? "Dumped"
-                          : effectiveTotal > 0
-                            ? `${effectiveProgress.toLocaleString()}/${effectiveTotal.toLocaleString()}`
-                            : statusText,
-                        percentDone: isDumped ? 100 : percentDone,
-                      }
-                    })
+                  const incoming = normalizeDumpRowsFromDomains(domains, nowKey)
 
                   if (process.env.NODE_ENV !== "production") {
                     console.log("[SSE][dumper_stats] rows computed:", {
@@ -1775,6 +1832,13 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             } else if (eventType === "task_done") {
               const payload = parsed as TaskDoneSSEPayload
               const final = payload.final || {}
+              const rawTaskDoneStatus = (payload.status || "").trim().toLowerCase()
+              const normalizedTaskDoneStatus =
+                rawTaskDoneStatus === "" || rawTaskDoneStatus === "done"
+                  ? "done"
+                  : rawTaskDoneStatus === "failed"
+                    ? "failed"
+                    : "failed"
               applyStatsPayload({
                 websites_total:
                   typeof final.websites_total === "number"
@@ -1799,7 +1863,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                     : Number(latestStatsSnapshotRef.current?.creditsUsed ?? 0),
                 eta_seconds: 0,
               })
-              setTaskStatus("complete")
+              setTaskStatus(normalizedTaskDoneStatus === "failed" ? "failed" : "complete")
               setTaskDoneReceived(true)
               setLoaderIsDone(true)
               setShowStartLoader(false)
@@ -2238,6 +2302,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       console.log('[Snapshot] ✅ Received snapshot:', {
         status: data.status,
         hasStats: !!data.stats,
+        hasDumpSnapshot: !!(data.dump_snapshot && typeof data.dump_snapshot === "object" && Object.keys(data.dump_snapshot).length > 0),
         itemCount: data.injection_items?.length || 0,
         lastEventId: data.last_event_id,
         hasMore: data.has_more,
@@ -2245,6 +2310,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       })
 
       if (data.stats) applyStatsPayload(data.stats)
+      applyDumpSnapshot(data.dump_snapshot)
       if (data.last_event_id) lastEventIdRef.current = data.last_event_id
 
       // Store cursor for later paging (scroll to load more).
@@ -2287,7 +2353,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       // Snapshot attempt finished (even if empty/error). Stop showing "waiting" skeletons forever.
       setInjectionHydrated(true)
     }
-  }, [INJECTION_PREFETCH_LIMIT, INJECTION_WINDOW_LIMIT, applyStatsPayload, getAccessToken, id, queueResultsCacheSave])
+  }, [INJECTION_PREFETCH_LIMIT, INJECTION_WINDOW_LIMIT, applyDumpSnapshot, applyStatsPayload, getAccessToken, id, queueResultsCacheSave])
 
   const loadMoreInjectionFromSnapshot = React.useCallback(async () => {
     if (isLoadingInjectionMore) return
