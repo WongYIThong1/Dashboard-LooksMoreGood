@@ -26,91 +26,513 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getCachedUserInfo, setCachedUserInfo } from "@/lib/user-cache"
 
-const leaderboardData = [
-  { rank: 1, username: "Alice", score: 28470 },
-  { rank: 2, username: "Bob", score: 26540 },
-  { rank: 3, username: "Charlie", score: 25010 },
-  { rank: 4, username: "David", score: 23980 },
-  { rank: 5, username: "Eva", score: 22450 },
-  { rank: 6, username: "Frank", score: 21020 },
-  { rank: 7, username: "Grace", score: 19870 },
-  { rank: 8, username: "Henry", score: 18540 },
-  { rank: 9, username: "Ivy", score: 17420 },
-  { rank: 10, username: "Jack", score: 16980 },
-  { rank: 11, username: "Kate", score: 15640 },
-  { rank: 12, username: "Leo", score: 14520 },
-  { rank: 13, username: "Mia", score: 13890 },
-  { rank: 14, username: "Noah", score: 12760 },
-  { rank: 15, username: "Olivia", score: 11540 },
-]
+type DashboardUser = {
+  user_name: string
+  plan: string
+  rank: number | null
+  injected_total: number
+  dumped_total: number
+  score: number
+  last_week_rank: number | null
+  last_week_injected: number
+  last_week_dumped: number
+}
 
-const currentUser = { rank: 42, username: "You", score: 1234 }
+type LeaderboardItem = {
+  rank: number | null
+  user_name: string
+  score: number
+  injected_total: number
+  dumped_total: number
+}
 
-const announcements = [
-  { title: "System Maintenance", desc: "Scheduled maintenance on Saturday 2:00-4:00 AM", isNew: true },
-  { title: "New Feature Released", desc: "Real-time leaderboard updates now available", isNew: true },
-  { title: "Monthly Challenge", desc: "January injection challenge starts soon", isNew: false },
-]
+type RecentActivityItem = {
+  taskid: string
+  domain: string
+  country: string
+  category: string
+  ts: number
+  event_id: string
+}
 
-const recentActivity = [
-  { domain: "example.com", rows: 1542, status: "success" },
-  { domain: "test-site.de", rows: 892, status: "success" },
-  { domain: "shop.jp", rows: 0, status: "failed" },
-  { domain: "store.cn", rows: 4512, status: "success" },
-]
+type AnnouncementItem = {
+  id: string
+  main: string
+  subtext: string
+  created_at: string
+}
+
+type DashboardSnapshot = {
+  type: string
+  user: DashboardUser
+  leaderboard: LeaderboardItem[]
+  recent_activity: RecentActivityItem[]
+  announcements: AnnouncementItem[]
+  ts: number
+}
+
+const ACTIVITY_LIMIT = 4
+const ANNOUNCEMENT_LIMIT = 3
+
+const DEFAULT_USER: DashboardUser = {
+  user_name: "User",
+  plan: "Free",
+  rank: null,
+  injected_total: 0,
+  dumped_total: 0,
+  score: 0,
+  last_week_rank: null,
+  last_week_injected: 0,
+  last_week_dumped: 0,
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function toText(value: unknown, fallback = ""): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : fallback
+  }
+  return fallback
+}
+
+function toInteger(value: unknown, fallback = 0): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0, Math.trunc(n))
+}
+
+function toRank(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  const rank = Math.trunc(n)
+  return rank > 0 ? rank : null
+}
+
+function formatRank(rank: number | null): string {
+  return rank === null ? "-" : `#${rank}`
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString()
+}
+
+function formatTime(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "-"
+  return new Date(ts).toLocaleString()
+}
+
+function normalizeUser(input: unknown): DashboardUser {
+  if (!isRecord(input)) return { ...DEFAULT_USER }
+
+  const injectedTotal = toInteger(input.injected_total)
+  const dumpedTotal = toInteger(input.dumped_total)
+  const providedScore = Number(input.score)
+
+  return {
+    user_name: toText(input.user_name, DEFAULT_USER.user_name),
+    plan: toText(input.plan, DEFAULT_USER.plan),
+    rank: toRank(input.rank),
+    injected_total: injectedTotal,
+    dumped_total: dumpedTotal,
+    score: Number.isFinite(providedScore)
+      ? Math.max(0, Math.trunc(providedScore))
+      : injectedTotal + dumpedTotal * 3,
+    last_week_rank: toRank(input.last_week_rank),
+    last_week_injected: toInteger(input.last_week_injected, 0),
+    last_week_dumped: toInteger(input.last_week_dumped, 0),
+  }
+}
+
+function normalizeLeaderboard(input: unknown): LeaderboardItem[] {
+  if (!Array.isArray(input)) return []
+  return input.map((item) => {
+    const row = isRecord(item) ? item : {}
+    const injectedTotal = toInteger(row.injected_total)
+    const dumpedTotal = toInteger(row.dumped_total)
+    const providedScore = Number(row.score)
+
+    return {
+      rank: toRank(row.rank),
+      user_name: toText(row.user_name, "Unknown"),
+      score: Number.isFinite(providedScore)
+        ? Math.max(0, Math.trunc(providedScore))
+        : injectedTotal + dumpedTotal * 3,
+      injected_total: injectedTotal,
+      dumped_total: dumpedTotal,
+    }
+  })
+}
+
+function normalizeRecentActivity(input: unknown): RecentActivityItem[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((item) => {
+      const row = isRecord(item) ? item : {}
+      return {
+        taskid: toText(row.taskid),
+        domain: toText(row.domain, "-"),
+        country: toText(row.country, "-"),
+        category: toText(row.category, "-"),
+        ts: toInteger(row.ts),
+        event_id: toText(row.event_id),
+      }
+    })
+    .slice(0, ACTIVITY_LIMIT)
+}
+
+function dedupeAnnouncements(items: AnnouncementItem[]): AnnouncementItem[] {
+  const seen = new Set<string>()
+  const merged: AnnouncementItem[] = []
+  for (const item of items) {
+    if (!item.id || seen.has(item.id)) continue
+    seen.add(item.id)
+    merged.push(item)
+    if (merged.length >= ANNOUNCEMENT_LIMIT) break
+  }
+  return merged
+}
+
+function normalizeAnnouncements(input: unknown): AnnouncementItem[] {
+  if (!Array.isArray(input)) return []
+  const mapped = input.map((item, idx) => {
+    const row = isRecord(item) ? item : {}
+    const id = toText(row.id, `ann_${idx}`)
+    return {
+      id,
+      main: toText(row.main, "Announcement"),
+      subtext: toText(row.subtext),
+      created_at: toText(row.created_at),
+    }
+  })
+  return dedupeAnnouncements(mapped)
+}
+
+function normalizeSnapshot(input: unknown): DashboardSnapshot {
+  const row = isRecord(input) ? input : {}
+  return {
+    type: toText(row.type, "dashboard_snapshot"),
+    user: normalizeUser(row.user),
+    leaderboard: normalizeLeaderboard(row.leaderboard),
+    recent_activity: normalizeRecentActivity(row.recent_activity),
+    announcements: normalizeAnnouncements(row.announcements),
+    ts: toInteger(row.ts, Date.now()),
+  }
+}
 
 export function DashboardContent() {
-  const [username, setUsername] = React.useState<string | null>(null)
+  const [snapshot, setSnapshot] = React.useState<DashboardSnapshot | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const lastEventIdRef = React.useRef<string>("")
+  const sseAbortRef = React.useRef<AbortController | null>(null)
+  const sseRetryTimerRef = React.useRef<number | null>(null)
+  const sseRetryCountRef = React.useRef<number>(0)
+
+  const getAccessToken = React.useCallback(async () => {
+    const { createClient } = await import("@/lib/supabase/client")
+    const supabase = createClient()
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    return session?.access_token || null
+  }, [])
+
+  const applySnapshot = React.useCallback((next: DashboardSnapshot) => {
+    setSnapshot(next)
+
+    const cached = getCachedUserInfo()
+    setCachedUserInfo({
+      id: cached?.id,
+      email: cached?.email || "user@example.com",
+      username: next.user.user_name,
+      plan: next.user.plan,
+      avatarUrl: cached?.avatarUrl,
+      avatarHash: cached?.avatarHash,
+    })
+  }, [])
+
+  const fetchDashboard = React.useCallback(async () => {
+    const token = await getAccessToken()
+    if (!token) {
+      throw new Error("No access token")
+    }
+
+    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+    const url = new URL(`${externalApiDomain}/dashboard`)
+    url.searchParams.set("top", "0")
+    url.searchParams.set("activity_limit", String(ACTIVITY_LIMIT))
+    url.searchParams.set("ann_limit", String(ANNOUNCEMENT_LIMIT))
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`Dashboard request failed (HTTP ${response.status})`)
+    }
+
+    const payload = normalizeSnapshot(await response.json())
+    applySnapshot(payload)
+    setError(null)
+  }, [applySnapshot, getAccessToken])
+
+  const fetchAnnouncements = React.useCallback(async () => {
+    const token = await getAccessToken()
+    if (!token) return
+
+    const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+    const response = await fetch(`${externalApiDomain}/announcement`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    })
+
+    if (!response.ok) return
+
+    const payload = normalizeAnnouncements(await response.json())
+    setSnapshot((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        announcements: payload,
+        ts: Date.now(),
+      }
+    })
+  }, [getAccessToken])
+
+  const handleDashboardEvent = React.useCallback((raw: string, eventName: string) => {
+    if (!raw) return
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch (parseError) {
+      console.error("[Dashboard SSE] parse error:", parseError)
+      return
+    }
+
+    const packet = isRecord(parsed) ? parsed : {}
+    const packetType = toText(packet.type)
+    const eventType = packetType || eventName
+
+    if (eventType === "dashboard_snapshot") {
+      applySnapshot(normalizeSnapshot(packet))
+      return
+    }
+
+    if (eventType === "dashboard_update") {
+      setSnapshot((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          user: normalizeUser(packet.user ?? prev.user),
+          recent_activity: normalizeRecentActivity(packet.recent_activity ?? prev.recent_activity),
+          ts: Date.now(),
+        }
+      })
+      return
+    }
+
+    if (eventType === "leaderboard_update") {
+      setSnapshot((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          leaderboard: normalizeLeaderboard(packet.leaderboard),
+          ts: Date.now(),
+        }
+      })
+      return
+    }
+
+    if (eventType === "announcement_update") {
+      setSnapshot((prev) => {
+        if (!prev) return prev
+
+        const incomingList = normalizeAnnouncements(packet.announcements)
+        if (incomingList.length > 0) {
+          return {
+            ...prev,
+            announcements: dedupeAnnouncements([...incomingList, ...prev.announcements]),
+            ts: Date.now(),
+          }
+        }
+
+        const incomingOne = normalizeAnnouncements([packet.announcement ?? packet])
+        if (incomingOne.length > 0) {
+          return {
+            ...prev,
+            announcements: dedupeAnnouncements([...incomingOne, ...prev.announcements]),
+            ts: Date.now(),
+          }
+        }
+
+        return prev
+      })
+      void fetchAnnouncements()
+    }
+  }, [applySnapshot, fetchAnnouncements])
 
   React.useEffect(() => {
-    const fetchUsername = async () => {
-      // 先从缓存获取
-      const cached = getCachedUserInfo()
-      if (cached) {
-        setUsername(cached.username)
-        setIsLoading(false)
-      }
+    let cancelled = false
 
-      // 然后从服务器获取最新数据
-      try {
-        const { createClient } = await import('@/lib/supabase/client')
-        const supabase = createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-
-        if (user) {
-          const { data: profile } = await supabase
-            .from('user_profiles')
-            .select('username')
-            .eq('id', user.id)
-            .single()
-
-          const fetchedUsername = profile?.username || user.email?.split('@')[0] || 'User'
-          setUsername(fetchedUsername)
-          setCachedUserInfo({
-            id: user.id,
-            username: fetchedUsername,
-            email: user.email || 'user@example.com',
-            plan: 'Free',
-          })
-        }
-      } catch (error) {
-        console.error('Failed to fetch username:', error)
-      } finally {
-        setIsLoading(false)
+    const clearRetryTimer = () => {
+      if (sseRetryTimerRef.current !== null) {
+        window.clearTimeout(sseRetryTimerRef.current)
+        sseRetryTimerRef.current = null
       }
     }
 
-    fetchUsername()
-  }, [])
+    const scheduleReconnect = () => {
+      if (cancelled) return
+      clearRetryTimer()
+      const retry = sseRetryCountRef.current + 1
+      sseRetryCountRef.current = retry
+      const delay = Math.min(30000, 1000 * 2 ** Math.min(retry, 5))
+      sseRetryTimerRef.current = window.setTimeout(() => {
+        void connectSSE()
+      }, delay)
+    }
+
+    const connectSSE = async () => {
+      if (cancelled) return
+
+      try {
+        sseAbortRef.current?.abort()
+        const controller = new AbortController()
+        sseAbortRef.current = controller
+
+        const token = await getAccessToken()
+        if (!token) {
+          scheduleReconnect()
+          return
+        }
+
+        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+        const url = new URL(`${externalApiDomain}/sse/dashboard`)
+        if (lastEventIdRef.current) {
+          url.searchParams.set("since", lastEventIdRef.current)
+        }
+
+        const response = await fetch(url.toString(), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "text/event-stream",
+            ...(lastEventIdRef.current ? { "Last-Event-ID": lastEventIdRef.current } : {}),
+          },
+          signal: controller.signal,
+        })
+
+        if (!response.ok || !response.body) {
+          scheduleReconnect()
+          return
+        }
+
+        sseRetryCountRef.current = 0
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        let currentEvent = ""
+        let currentId = ""
+        let dataLines: string[] = []
+
+        while (!cancelled) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() || ""
+
+          for (const line of lines) {
+            if (line === "") {
+              const payload = dataLines.join("\n").trim()
+              if (currentId) {
+                lastEventIdRef.current = currentId
+              }
+              if (payload) {
+                handleDashboardEvent(payload, currentEvent || "message")
+              }
+              currentEvent = ""
+              currentId = ""
+              dataLines = []
+              continue
+            }
+            if (line.startsWith(":")) continue
+            if (line.startsWith("id:")) {
+              currentId = line.slice(3).trim()
+              continue
+            }
+            if (line.startsWith("event:")) {
+              currentEvent = line.slice(6).trim()
+              continue
+            }
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trimStart())
+            }
+          }
+        }
+
+        if (!controller.signal.aborted) {
+          scheduleReconnect()
+        }
+      } catch (sseError) {
+        if (!cancelled) {
+          console.error("[Dashboard SSE] connection error:", sseError)
+          scheduleReconnect()
+        }
+      }
+    }
+
+    const bootstrap = async () => {
+      setIsLoading(true)
+      try {
+        await fetchDashboard()
+      } catch (fetchError) {
+        console.error("[Dashboard] initial fetch failed:", fetchError)
+        if (!cancelled) {
+          setError("Failed to load dashboard data")
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+          void connectSSE()
+        }
+      }
+    }
+
+    void bootstrap()
+
+    return () => {
+      cancelled = true
+      clearRetryTimer()
+      sseAbortRef.current?.abort()
+    }
+  }, [fetchDashboard, getAccessToken, handleDashboardEvent])
+
+  const user = snapshot?.user ?? DEFAULT_USER
+  const leaderboard = snapshot?.leaderboard ?? []
+  const announcements = snapshot?.announcements ?? []
+  const recentActivity = snapshot?.recent_activity ?? []
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6 font-[family-name:var(--font-inter)]">
-      {/* Welcome & Stats */}
       <div className="flex flex-col gap-2">
         {isLoading ? (
           <>
@@ -119,28 +541,28 @@ export function DashboardContent() {
           </>
         ) : (
           <>
-            <h1 className="text-2xl font-semibold">Welcome back, {username || 'User'}</h1>
+            <h1 className="text-2xl font-semibold">Welcome back, {user.user_name}</h1>
             <p className="text-muted-foreground text-sm">{"Here's what's happening with your account today."}</p>
+            {error ? <p className="text-xs text-red-500">{error}</p> : null}
           </>
         )}
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Card className="rounded-xl">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Rank</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">#42</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatRank(user.rank)}</p>
               </div>
-              <div className="p-2 rounded-lg bg-yellow-500/10">
+              <div className="rounded-lg bg-yellow-500/10 p-2">
                 <IconTrophy className="size-5 text-yellow-500" />
               </div>
             </div>
-            <div className="flex items-center gap-1 mt-2">
+            <div className="mt-2 flex items-center gap-1">
               <IconTrendingUp className="size-3 text-emerald-500" />
-              <span className="text-xs text-emerald-500">+8 this week</span>
+              <span className="text-xs text-muted-foreground">Last week {formatRank(user.last_week_rank)}</span>
             </div>
           </CardContent>
         </Card>
@@ -150,15 +572,15 @@ export function DashboardContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Injected</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">1,234</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.injected_total)}</p>
               </div>
-              <div className="p-2 rounded-lg bg-blue-500/10">
+              <div className="rounded-lg bg-blue-500/10 p-2">
                 <IconTarget className="size-5 text-blue-500" />
               </div>
             </div>
-            <div className="flex items-center gap-1 mt-2">
+            <div className="mt-2 flex items-center gap-1">
               <IconTrendingUp className="size-3 text-emerald-500" />
-              <span className="text-xs text-emerald-500">+156 today</span>
+              <span className="text-xs text-muted-foreground">Last week {formatCount(user.last_week_injected)}</span>
             </div>
           </CardContent>
         </Card>
@@ -168,15 +590,15 @@ export function DashboardContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Dumped</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">58.4K</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.dumped_total)}</p>
               </div>
-              <div className="p-2 rounded-lg bg-purple-500/10">
+              <div className="rounded-lg bg-purple-500/10 p-2">
                 <IconDatabase className="size-5 text-purple-500" />
               </div>
             </div>
-            <div className="flex items-center gap-1 mt-2">
+            <div className="mt-2 flex items-center gap-1">
               <IconTrendingUp className="size-3 text-emerald-500" />
-              <span className="text-xs text-emerald-500">+2.8K this week</span>
+              <span className="text-xs text-muted-foreground">Last week {formatCount(user.last_week_dumped)}</span>
             </div>
           </CardContent>
         </Card>
@@ -185,33 +607,45 @@ export function DashboardContent() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Success Rate</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">94.2%</p>
+                <p className="text-sm text-muted-foreground">Score</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.score)}</p>
               </div>
-              <div className="p-2 rounded-lg bg-emerald-500/10">
+              <div className="rounded-lg bg-emerald-500/10 p-2">
                 <IconChartBar className="size-5 text-emerald-500" />
               </div>
             </div>
-            <Progress value={94.2} className="h-1 mt-3" />
+            <p className="mt-2 text-xs text-muted-foreground">Injected x1 + Dumped x3</p>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-xl">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Plan</p>
+                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{user.plan}</p>
+              </div>
+              <div className="rounded-lg bg-orange-500/10 p-2">
+                <IconCrown className="size-5 text-orange-500" />
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Main Content */}
       <div className="grid gap-4 lg:grid-cols-5">
-        {/* Leaderboard */}
-        <Card className="rounded-xl lg:col-span-3">
+        <Card className="h-[520px] rounded-xl lg:col-span-3">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <IconFlame className="size-4 text-orange-500" />
                 <CardTitle className="text-base">Leaderboard</CardTitle>
               </div>
-              <Badge variant="outline" className="text-xs">{leaderboardData.length} users</Badge>
+              <Badge variant="outline" className="text-xs">{leaderboard.length} users</Badge>
             </div>
           </CardHeader>
-          <CardContent className="p-0">
-            <div className="max-h-[280px] overflow-auto">
+          <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+            <div className="min-h-0 flex-1 overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50">
@@ -221,96 +655,86 @@ export function DashboardContent() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {leaderboardData.map((item) => (
-                    <TableRow key={item.rank}>
+                  {leaderboard.map((item, index) => (
+                    <TableRow key={`${item.user_name}_${item.rank ?? index}`}>
                       <TableCell>
                         {item.rank === 1 ? (
-                          <div className="flex items-center justify-center size-7 rounded-full bg-yellow-500/10">
+                          <div className="flex size-7 items-center justify-center rounded-full bg-yellow-500/10">
                             <IconCrown className="size-4 text-yellow-500" />
                           </div>
                         ) : (
-                          <span className="text-muted-foreground font-[family-name:var(--font-jetbrains-mono)] pl-2">
-                            #{item.rank}
+                          <span className="pl-2 font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
+                            {formatRank(item.rank)}
                           </span>
                         )}
                       </TableCell>
                       <TableCell>
-                        <span className="font-medium">{item.username}</span>
+                        <span className="font-medium">{item.user_name}</span>
                       </TableCell>
                       <TableCell className="text-right font-[family-name:var(--font-jetbrains-mono)]">
-                        {item.score.toLocaleString()}
+                        {formatCount(item.score)}
                       </TableCell>
                     </TableRow>
                   ))}
-                </TableBody>
-              </Table>
-            </div>
-            {/* Current User Row - Fixed at bottom */}
-            <div className="border-t bg-muted/30">
-              <Table>
-                <TableBody>
-                  <TableRow className="bg-emerald-500/5">
-                    <TableCell className="w-16">
-                      <span className="text-emerald-500 font-[family-name:var(--font-jetbrains-mono)] font-medium pl-2">
-                        #{currentUser.rank}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-medium text-emerald-500">{currentUser.username}</span>
-                    </TableCell>
-                    <TableCell className="text-right font-[family-name:var(--font-jetbrains-mono)] text-emerald-500">
-                      {currentUser.score.toLocaleString()}
-                    </TableCell>
-                  </TableRow>
+                  {leaderboard.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="py-8 text-center text-sm text-muted-foreground">
+                        No leaderboard data
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
                 </TableBody>
               </Table>
             </div>
           </CardContent>
         </Card>
 
-        {/* Right Column */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          {/* Announcements */}
-          <Card className="rounded-xl">
+        <div className="flex flex-col gap-4 lg:col-span-2">
+          <Card className="h-[220px] rounded-xl">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-2">
                 <IconBell className="size-4 text-blue-500" />
                 <CardTitle className="text-base">Announcements</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {announcements.map((item, index) => (
-                <div key={index} className="flex gap-3">
-                  <div className={`size-2 rounded-full mt-1.5 ${item.isNew ? 'bg-blue-500' : 'bg-muted'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{item.title}</p>
-                    <p className="text-xs text-muted-foreground truncate">{item.desc}</p>
+            <CardContent className="min-h-0 flex-1 overflow-auto space-y-3">
+              {announcements.map((item) => (
+                <div key={item.id} className="flex gap-3">
+                  <div className="mt-1.5 size-2 rounded-full bg-blue-500" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{item.main}</p>
+                    <p className="truncate text-xs text-muted-foreground">{item.subtext}</p>
                   </div>
                 </div>
               ))}
+              {announcements.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No announcements</p>
+              ) : null}
             </CardContent>
           </Card>
 
-          {/* Recent Activity */}
-          <Card className="rounded-xl flex-1">
+          <Card className="h-[280px] rounded-xl">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-2">
                 <IconDatabase className="size-4 text-purple-500" />
                 <CardTitle className="text-base">Recent Activity</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="min-h-0 flex-1 overflow-auto space-y-3">
               {recentActivity.map((item, index) => (
-                <div key={index} className="flex items-center justify-between">
-                  <span className="text-sm truncate flex-1">{item.domain}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
-                      {item.rows > 0 ? item.rows.toLocaleString() : '-'}
-                    </span>
-                    <div className={`size-2 rounded-full ${item.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <div key={item.event_id || `${item.taskid}_${index}`} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm">{item.domain}</p>
+                    <p className="truncate text-xs text-muted-foreground">{item.country} | {item.category}</p>
                   </div>
+                  <span className="shrink-0 text-xs font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
+                    {formatTime(item.ts)}
+                  </span>
                 </div>
               ))}
+              {recentActivity.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No recent injected activity</p>
+              ) : null}
             </CardContent>
           </Card>
         </div>
