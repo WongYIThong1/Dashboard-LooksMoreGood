@@ -80,6 +80,9 @@ interface Task {
   name: string
   status: TaskStatus
   found: number
+  targetTotal: number | null
+  remaining: number | null
+  progressPercent: number
   target: string | null
   file: string
   started: string
@@ -98,64 +101,45 @@ interface ApiTask {
 }
 
 const statusConfig = {
-  pending: { icon: IconClock, label: "Pending", dotClass: "bg-muted-foreground" },
-  running_recon: { icon: IconLoader2, label: "Running recon", dotClass: "bg-blue-500" },
-  running: { icon: IconLoader2, label: "Running", dotClass: "bg-blue-500" },
-  paused: { icon: IconClock, label: "Paused", dotClass: "bg-orange-500" },
+  pending: { icon: IconClock, label: "Pending", dotClass: "bg-zinc-400" },
+  running_recon: { icon: IconLoader2, label: "Running recon", dotClass: "bg-zinc-900 dark:bg-zinc-100" },
+  running: { icon: IconLoader2, label: "Running", dotClass: "bg-zinc-900 dark:bg-zinc-100" },
+  paused: { icon: IconClock, label: "Paused", dotClass: "bg-zinc-500" },
   complete: { icon: IconCircleCheck, label: "Complete", dotClass: "bg-emerald-500" },
-  failed: { icon: IconAlertCircle, label: "Failed", dotClass: "bg-red-500" },
+  failed: { icon: IconAlertCircle, label: "Failed", dotClass: "bg-rose-500" },
 }
 
-// Component for running task duration that updates every second
-function RunningDuration({ startedTime }: { startedTime: string }) {
-  const [duration, setDuration] = React.useState("")
-
-  React.useEffect(() => {
-    const calculateDuration = () => {
-      const date = new Date(startedTime)
-      if (isNaN(date.getTime())) {
-        setDuration("-")
-        return
-      }
-      
-      const now = new Date()
-      const diffMs = now.getTime() - date.getTime()
-      const diffSecs = Math.floor(diffMs / 1000)
-      const diffMins = Math.floor(diffSecs / 60)
-      const diffHours = Math.floor(diffMins / 60)
-      const diffDays = Math.floor(diffHours / 24)
-
-      if (diffSecs < 60) {
-        setDuration(`${diffSecs}s`)
-      } else if (diffMins < 60) {
-        setDuration(`${diffMins}m ${diffSecs % 60}s`)
-      } else if (diffHours < 24) {
-        setDuration(`${diffHours}h ${diffMins % 60}m`)
-      } else {
-        setDuration(`${diffDays}d ${diffHours % 24}h`)
-      }
-    }
-
-    // Calculate immediately
-    calculateDuration()
-
-    // Update every second
-    const interval = setInterval(calculateDuration, 1000)
-
-    return () => clearInterval(interval)
-  }, [startedTime])
-
+function InjectableIcon() {
   return (
-    <div className="text-right text-muted-foreground font-mono">{duration}</div>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m18 2l4 4m-5 1l3-3m-1 5L8.7 19.3c-1 1-2.5 1-3.4 0l-.6-.6c-1-1-1-2.5 0-3.4L15 5m-6 6l4 4m-8 4l-3 3M14 4l6 6" />
+    </svg>
   )
 }
 
-const columns: ColumnDef<Task>[] = [
+const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
   {
     accessorKey: "name",
     header: "Task",
     cell: ({ row }) => (
-      <span className="font-medium">{row.getValue("name")}</span>
+      <a
+        href={`/tasks/${row.original.id}`}
+        className="block max-w-[220px] truncate text-sm font-medium hover:underline"
+        title={String(row.getValue("name"))}
+      >
+        {row.getValue("name")}
+      </a>
     ),
   },
   {
@@ -166,7 +150,7 @@ const columns: ColumnDef<Task>[] = [
       const config = statusConfig[status as TaskStatus] || statusConfig.pending
       const StatusIcon = config.icon
       return (
-        <Badge variant="outline" className="bg-transparent">
+        <Badge variant="outline" className="h-5 gap-1 bg-transparent px-1.5 py-0 text-[11px]">
           <span className={`size-1.5 rounded-full ${config.dotClass}`} />
           <span className="text-foreground">{config.label}</span>
           {(status === "running" || status === "running_recon") && (
@@ -178,69 +162,63 @@ const columns: ColumnDef<Task>[] = [
   },
   {
     accessorKey: "found",
-    header: "Found",
+    header: "Injectable",
     cell: ({ row }) => (
-      <span className="font-mono text-sm font-medium">{row.getValue("found")}</span>
+      <span className="inline-flex items-center gap-1 font-mono text-xs font-medium">
+        <span className="text-muted-foreground">
+          <InjectableIcon />
+        </span>
+        <span>{row.getValue("found")}</span>
+      </span>
     ),
   },
   {
-    accessorKey: "target",
-    header: "Target",
+    id: "progress",
+    header: "Progress",
     cell: ({ row }) => {
-      const target = row.getValue("target") as string | null
+      const progressPercent = row.original.progressPercent
       return (
-        <span className="font-mono text-sm text-muted-foreground">{target || "-"}</span>
-      )
-    },
-  },
-  {
-    accessorKey: "file",
-    header: "File",
-    cell: ({ row }) => (
-      <span className="text-muted-foreground">{row.getValue("file")}</span>
-    ),
-  },
-  {
-    accessorKey: "started",
-    header: () => <div className="text-right">Started</div>,
-    cell: ({ row }) => {
-      const isRunning = row.original.isRunning
-      const startedTime = row.original.startedTime
-      
-      // For running tasks, use a component that updates every second
-      if (isRunning && startedTime && startedTime !== '-') {
-        return <RunningDuration startedTime={startedTime} />
-      }
-      
-      const startedValue = row.original.started || row.getValue("started") || '-'
-      const displayValue = startedValue && startedValue !== '' && startedValue !== 'null' ? startedValue : '-'
-      return (
-        <div className="text-right text-muted-foreground">
-          <span>{displayValue}</span>
+        <div className="flex min-w-[130px] items-center gap-1.5">
+          <Progress value={progressPercent} className="h-1 w-[90px]" />
+          <span className="text-[11px] font-mono text-muted-foreground">{progressPercent}%</span>
         </div>
       )
     },
   },
   {
+    accessorKey: "remaining",
+    header: "Remaining",
+    cell: ({ row }) => (
+      <span className="font-mono text-xs text-muted-foreground">
+        {row.original.remaining === null ? "-" : row.original.remaining}
+      </span>
+    ),
+  },
+  {
     id: "actions",
+    header: "",
     cell: ({ row }) => (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            className="size-8 p-0"
-            size="icon"
-          >
+          <Button variant="ghost" size="icon" className="size-7">
             <IconDotsVertical className="size-4" />
-            <span className="sr-only">Open menu</span>
+            <span className="sr-only">Open actions</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <a href={`/tasks/${row.original.id}`}>View details</a>
+            <a href={`/tasks/${row.original.id}`}>View</a>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-red-600 focus:text-red-600">Delete</DropdownMenuItem>
+          <DropdownMenuItem
+            className="text-red-600 focus:text-red-600"
+            onSelect={(event) => {
+              event.preventDefault()
+              onDeleteTask(row.original)
+            }}
+          >
+            Delete
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     ),
@@ -463,11 +441,21 @@ export function TasksContent() {
       // Transform API data to match frontend format
       const transformedTasks: Task[] = (tasksData.tasks || []).map((task: ApiTask) => {
         const isRunning = task.status === 'running' || task.status === 'running_recon'
+        const found = Math.max(0, Math.trunc(Number(task.found || 0)))
+        const parsedTarget = Number(task.target ?? NaN)
+        const targetTotal =
+          Number.isFinite(parsedTarget) && parsedTarget >= 0 ? Math.trunc(parsedTarget) : null
+        const remaining = targetTotal === null ? null : Math.max(0, targetTotal - found)
+        const progressPercent =
+          targetTotal !== null && targetTotal > 0 ? Math.max(0, Math.min(100, Math.round((found / targetTotal) * 100))) : 0
         return {
           id: task.id,
           name: task.name,
           status: task.status as TaskStatus,
-          found: task.found,
+          found,
+          targetTotal,
+          remaining,
+          progressPercent,
           target: task.target,
           file: task.file,
           started: formatTimeAgo(task.started_time),
@@ -488,6 +476,30 @@ export function TasksContent() {
     }
   }
 
+  const handleDeleteTask = async (task: Task) => {
+    const confirmed = window.confirm(`Delete task "${task.name}"?`)
+    if (!confirmed) return
+
+    try {
+      const response = await fetch(`/api/v1/tasks/${task.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      })
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to delete task")
+      }
+
+      toast.success("Task deleted")
+      setTasksData((prev) => prev.filter((item) => item.id !== task.id))
+      fetchTasks()
+    } catch (error) {
+      console.error("Delete task error:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to delete task")
+    }
+  }
+
   const filteredTasks = React.useMemo(() => {
     const q = query.trim().toLowerCase()
     return tasksData.filter((t) => {
@@ -504,6 +516,8 @@ export function TasksContent() {
 
   const usagePercent =
     maxTasks > 0 ? Math.min(100, Math.round((tasksData.length / maxTasks) * 100)) : 0
+
+  const columns = getColumns(handleDeleteTask)
 
   const table = useReactTable({
     data: filteredTasks,
@@ -612,7 +626,7 @@ export function TasksContent() {
                   <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
                 </div>
               ) : (
-                <Table>
+                <Table className="table-fixed">
                   <TableHeader>
                     {table.getHeaderGroups().map((headerGroup) => (
                       <TableRow
@@ -623,8 +637,13 @@ export function TasksContent() {
                           <TableHead
                             key={header.id}
                             className={[
-                              "text-xs font-medium text-muted-foreground",
-                              header.column.id === "started" ? "text-right" : "",
+                              "h-8 px-2 py-1 text-[11px] font-medium text-muted-foreground",
+                              header.column.id === "name" ? "w-[38%]" : "",
+                              header.column.id === "status" ? "w-[18%]" : "",
+                              header.column.id === "found" ? "w-[10%]" : "",
+                              header.column.id === "progress" ? "w-[18%]" : "",
+                              header.column.id === "remaining" ? "w-[10%]" : "",
+                              header.column.id === "actions" ? "w-[6%]" : "",
                             ].join(" ")}
                           >
                             {header.isPlaceholder
@@ -640,7 +659,13 @@ export function TasksContent() {
                       table.getRowModel().rows.map((row) => (
                         <TableRow key={row.id}>
                           {row.getVisibleCells().map((cell) => (
-                            <TableCell key={cell.id}>
+                            <TableCell
+                              key={cell.id}
+                              className={[
+                                "px-2 py-2 align-middle",
+                                cell.column.id === "name" ? "pr-3" : "",
+                              ].join(" ")}
+                            >
                               {flexRender(cell.column.columnDef.cell, cell.getContext())}
                             </TableCell>
                           ))}

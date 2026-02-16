@@ -29,6 +29,7 @@ import {
   IconEye,
   IconBook,
   IconCpu,
+  IconCoins,
   IconShieldCheck,
 } from "@tabler/icons-react"
 import {
@@ -81,7 +82,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { toast } from "sonner"
-import { Cell, Pie, PieChart } from "recharts"
+import { CartesianGrid, Cell, Line, LineChart, Pie, PieChart, XAxis } from "recharts"
+import { Skeleton } from "@/components/ui/skeleton"
 
 // API Response Types
 interface UrlItem {
@@ -131,6 +133,246 @@ interface TaskDetailContentProps {
   id: string
 }
 
+interface StatsSSEPayload {
+  type?: string
+  websites_total?: number
+  websites_done?: number
+  remaining?: number
+  success?: number
+  failed?: number
+  waf_detected?: number
+  credits?: number
+  rps?: number
+  rps_history?: number[]
+  wpm?: number
+  wpm_history?: number[]
+  category?: Record<string, number>
+  eta_seconds?: number
+  dump?: number
+  dumped?: number
+}
+
+interface ResultsBatchSSEPayload {
+  type?: string
+  credits?: number
+  items?: Array<{
+    domain?: string
+    country?: string
+    category?: string
+    waf?: boolean
+    created_at?: string
+  }>
+}
+
+interface DumperStatsSSEPayload {
+  type?: string
+  preset?: string
+  dump?: number
+  dumped?: number
+  domains?: Array<{
+    domain?: string
+    country?: string
+    category?: string
+    rows?: string | number
+    progress?: number
+    total?: number
+    status?: string
+    success?: boolean
+  }>
+}
+
+interface TaskDoneSSEPayload {
+  type?: string
+  taskid?: string
+  status?: string
+  credits?: number
+  final?: {
+    websites_total?: number
+    websites_done?: number
+    remaining?: number
+    success?: number
+    failed?: number
+  }
+}
+
+interface DumpUploadStartResponse {
+  success?: boolean
+  request_id?: string
+  upload_object_path?: string
+  error?: string
+  message?: string
+}
+
+interface SnapshotResponse {
+  task_id: string
+  status: string
+  stats?: Partial<StatsSSEPayload>
+  injection_items?: Array<{
+    domain?: string
+    country?: string
+    category?: string
+    created_at?: string
+  }>
+  last_event_id?: string
+  next_cursor?: string
+  has_more?: boolean
+}
+
+type InjectionCacheRow = {
+  key: string
+  domain: string
+  country: string
+  category: string
+  waf?: boolean
+}
+
+type StreamStatsCacheRecord = {
+  updatedAt: number
+  lastEventId: string
+  progress: {
+    current: number
+    target: number
+  }
+  success: number
+  failed: number
+  wafDetected: number
+  creditsUsed: number
+  rps: number
+  wpm: number
+  etaSeconds: number
+  rpsHistory: number[]
+  wpmHistory: number[]
+  category: Record<string, number>
+  dump: number
+  dumped: number
+}
+
+type ResultsCacheRecord = {
+  taskId: string
+  updatedAt: number
+  rows: InjectionCacheRow[]
+}
+
+const STREAM_RESULTS_DB_NAME = "task_stream_cache_v1"
+const STREAM_RESULTS_STORE = "results_by_task"
+
+function getJsonSizeBytes(value: unknown): number {
+  try {
+    return new Blob([JSON.stringify(value)]).size
+  } catch {
+    return Number.MAX_SAFE_INTEGER
+  }
+}
+
+function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error || new Error("IndexedDB request failed"))
+  })
+}
+
+function idbTxDone(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error || new Error("IndexedDB transaction failed"))
+    tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"))
+  })
+}
+
+async function openStreamResultsDb(): Promise<IDBDatabase | null> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) {
+    return null
+  }
+
+  try {
+    const openReq = window.indexedDB.open(STREAM_RESULTS_DB_NAME, 1)
+    openReq.onupgradeneeded = () => {
+      const db = openReq.result
+      if (!db.objectStoreNames.contains(STREAM_RESULTS_STORE)) {
+        db.createObjectStore(STREAM_RESULTS_STORE, { keyPath: "taskId" })
+      }
+    }
+    return await idbRequest(openReq)
+  } catch (error) {
+    console.error("[Cache] ❌ Failed to open IndexedDB:", error)
+    return null
+  }
+}
+
+async function loadResultsCacheForTask(taskId: string): Promise<ResultsCacheRecord | null> {
+  const db = await openStreamResultsDb()
+  if (!db) return null
+
+  try {
+    const tx = db.transaction(STREAM_RESULTS_STORE, "readonly")
+    const store = tx.objectStore(STREAM_RESULTS_STORE)
+    const record = (await idbRequest(store.get(taskId))) as ResultsCacheRecord | undefined
+    await idbTxDone(tx)
+    return record ?? null
+  } catch (error) {
+    console.error("[Cache] ❌ Failed to load results cache:", error)
+    return null
+  } finally {
+    db.close()
+  }
+}
+
+async function clearResultsCacheForTask(taskId: string): Promise<void> {
+  const db = await openStreamResultsDb()
+  if (!db) return
+
+  try {
+    const tx = db.transaction(STREAM_RESULTS_STORE, "readwrite")
+    const store = tx.objectStore(STREAM_RESULTS_STORE)
+    await idbRequest(store.delete(taskId))
+    await idbTxDone(tx)
+  } catch (error) {
+    console.error("[Cache] ❌ Failed to clear results cache:", error)
+  } finally {
+    db.close()
+  }
+}
+
+async function saveResultsCacheForTask(
+  taskId: string,
+  rows: InjectionCacheRow[],
+  perTaskLimit: number,
+  globalBytesLimit: number
+): Promise<void> {
+  const db = await openStreamResultsDb()
+  if (!db) return
+
+  try {
+    const tx = db.transaction(STREAM_RESULTS_STORE, "readwrite")
+    const store = tx.objectStore(STREAM_RESULTS_STORE)
+
+    const trimmedRows = rows.slice(0, perTaskLimit)
+    const currentRecord: ResultsCacheRecord = {
+      taskId,
+      updatedAt: Date.now(),
+      rows: trimmedRows,
+    }
+    await idbRequest(store.put(currentRecord))
+
+    const allRecords = (await idbRequest(store.getAll())) as ResultsCacheRecord[]
+    const sorted = allRecords.sort((a, b) => b.updatedAt - a.updatedAt)
+
+    let usedBytes = 0
+    for (const record of sorted) {
+      usedBytes += getJsonSizeBytes(record)
+      if (usedBytes > globalBytesLimit) {
+        await idbRequest(store.delete(record.taskId))
+      }
+    }
+
+    await idbTxDone(tx)
+  } catch (error) {
+    console.error("[Cache] ❌ Failed to save results cache:", error)
+  } finally {
+    db.close()
+  }
+}
+
 // Table row data (transformed from API)
 interface TableRowData {
   id: string
@@ -141,8 +383,6 @@ interface TableRowData {
   rows: number
   status: "complete" | "dumping" | "failed" | "queue"
 }
-
-// Removed SSE functionality as per requirements
 
 // Map API status to UI status
 function mapUrlStatus(apiStatus: string): "complete" | "dumping" | "failed" | "queue" {
@@ -196,15 +436,6 @@ const statusConfig = {
 function getColumns(taskId: string): ColumnDef<TableRowData>[] {
   return [
     {
-      accessorKey: "id",
-      header: "ID",
-      cell: ({ row }) => {
-        const id = row.getValue("id") as string
-        const shortId = id.split("-")[0]
-        return <span className="font-mono text-xs text-muted-foreground">{shortId}</span>
-      },
-    },
-    {
       accessorKey: "country",
       header: "Country",
       cell: ({ row }) => {
@@ -214,7 +445,7 @@ function getColumns(taskId: string): ColumnDef<TableRowData>[] {
     },
     {
       accessorKey: "domain",
-      header: "Domain",
+      header: "Domains",
       cell: ({ row }) => {
         const domain = row.getValue("domain") as string
         return <span className="font-mono text-sm text-muted-foreground">{domain || "-"}</span>
@@ -222,7 +453,7 @@ function getColumns(taskId: string): ColumnDef<TableRowData>[] {
     },
     {
       accessorKey: "type",
-      header: "Type",
+      header: "Category",
       cell: ({ row }) => {
         const type = row.getValue("type") as string
         return type !== "-" ? (
@@ -231,28 +462,6 @@ function getColumns(taskId: string): ColumnDef<TableRowData>[] {
           </Badge>
         ) : (
           <span className="text-sm text-muted-foreground">-</span>
-        )
-      },
-    },
-    {
-      accessorKey: "database",
-      header: "Database",
-      cell: ({ row }) => {
-        const database = row.getValue("database") as string
-        return <span className="font-mono text-sm font-medium">{database || "-"}</span>
-      },
-    },
-    {
-      accessorKey: "rows",
-      header: () => <div className="text-right">Rows</div>,
-      cell: ({ row }) => {
-        const rows = row.getValue("rows") as number
-        return (
-          <div className="text-right">
-            <span className="font-mono text-sm font-medium">
-              {rows > 0 ? rows.toLocaleString() : "-"}
-            </span>
-          </div>
         )
       },
     },
@@ -271,23 +480,6 @@ function getColumns(taskId: string): ColumnDef<TableRowData>[] {
         )
       },
     },
-    {
-      id: "actions",
-      cell: ({ row }) => (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className="shrink-0">
-              <IconDotsVertical size={16} />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem asChild>
-              <a href={`/tasks/${taskId}/${row.original.id}`}>View database</a>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ),
-    },
   ]
 }
 
@@ -297,29 +489,30 @@ function formatCompact(value: number): string {
   return value.toString()
 }
 
-function buildTrendPath(values: number[], width: number, height: number): string {
-  if (values.length === 0) return ""
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const range = Math.max(1, max - min)
-  return values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * width
-      const y = height - ((v - min) / range) * height
-      return `${x},${y}`
-    })
-    .join(" ")
+function sanitizeChartKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown"
 }
 
-const categoryChartConfig = {
-  complete: { label: "Complete", color: "#10b981" },
-  dumping: { label: "Dumping", color: "#3b82f6" },
-  queue: { label: "Queue", color: "#f59e0b" },
-  failed: { label: "Failed", color: "#ef4444" },
-} satisfies ChartConfig
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "00m 00s"
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`
+}
 
 export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const shortId = id.split("-")[0]
+  const INJECTION_WINDOW_LIMIT = 1000
+  const INJECTION_PREFETCH_LIMIT = 50
+  const INJECTION_SNAPSHOT_PREFETCH_MAX = 400
+  const STREAM_STATS_CACHE_KEY = `task_stream_state_${id}`
+  const STREAM_STATS_TTL_MS = 60 * 60 * 1000
+  const STREAM_STATS_MAX_BYTES = 200 * 1024
+  const STREAM_STATS_WRITE_DEBOUNCE_MS = 800
+  const RESULTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+  const RESULTS_CACHE_MAX_ROWS_PER_TASK = 200
+  const RESULTS_CACHE_MAX_BYTES = 30 * 1024 * 1024
+  const RESULTS_CACHE_WRITE_DEBOUNCE_MS = 600
 
   // Data state
   const [isLoadingData, setIsLoadingData] = React.useState(true)
@@ -330,6 +523,48 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [creditsUsed, setCreditsUsed] = React.useState(0)
   const [fileId, setFileId] = React.useState<string>("")
   const [storagePath, setStoragePath] = React.useState<string>("")
+  const [sseRps, setSseRps] = React.useState(0)
+  const [sseWpm, setSseWpm] = React.useState(0)
+  const [sseRpsHistory, setSseRpsHistory] = React.useState<number[]>([])
+  const [sseWpmHistory, setSseWpmHistory] = React.useState<number[]>([])
+  const [sseSuccess, setSseSuccess] = React.useState(0)
+  const [sseFailed, setSseFailed] = React.useState(0)
+  const [sseWafDetected, setSseWafDetected] = React.useState(0)
+  const [sseEtaSeconds, setSseEtaSeconds] = React.useState(0)
+  const [sseCategory, setSseCategory] = React.useState<Record<string, number>>({})
+  const [sseDumpCount, setSseDumpCount] = React.useState(0)
+  const [sseDumpedCount, setSseDumpedCount] = React.useState(0)
+  const [sseInjectionRows, setSseInjectionRows] = React.useState<
+    Array<{ key: string; domain: string; country: string; category: string; waf?: boolean }>
+  >([])
+  const [sseDumpRows, setSseDumpRows] = React.useState<
+    Array<{
+      key: string
+      domain: string
+      country: string
+      category: string
+      rows: number
+      statusKind: "dumped" | "progress"
+      statusLabel: string
+      percentDone: number
+    }>
+  >([])
+
+  // ETA countdown (UI-only). Synced from stats eta_seconds and ticks down locally.
+  const [etaCountdownSeconds, setEtaCountdownSeconds] = React.useState<number | null>(null)
+  const etaIntervalRef = React.useRef<number | null>(null)
+
+  // Injection list pagination via snapshot cursor.
+  const [injectionNextCursor, setInjectionNextCursor] = React.useState<string | null>(null)
+  const [injectionHasMore, setInjectionHasMore] = React.useState(false)
+  const [isLoadingInjectionMore, setIsLoadingInjectionMore] = React.useState(false)
+  const injectionCursorRef = React.useRef<string | null>(null)
+  const injectionHasMoreRef = React.useRef(false)
+
+  // Hydration flags (cache/snapshot/SSE). Used for skeleton rendering.
+  const [statsHydrated, setStatsHydrated] = React.useState(false)
+  const [injectionHydrated, setInjectionHydrated] = React.useState(false)
+  const [dumpsHydrated, setDumpsHydrated] = React.useState(false)
   
   // Client-side pagination state
   const [currentPage, setCurrentPage] = React.useState(1)
@@ -366,6 +601,9 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const antiBanAvailable = false
 
   const [isStarting, setIsStarting] = React.useState(false)
+  const [isDownloadingInjection, setIsDownloadingInjection] = React.useState(false)
+  const [dumpUploadState, setDumpUploadState] = React.useState<"idle" | "uploading" | "done" | "failed">("idle")
+  const [dumpUploadRequestId, setDumpUploadRequestId] = React.useState<string | null>(null)
   const [showStartLoader, setShowStartLoader] = React.useState(false)
   const [loaderStep, setLoaderStep] = React.useState(0)
   const [uploadProgress, setUploadProgress] = React.useState(0)
@@ -383,13 +621,64 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const sseRetryTimer = React.useRef<number | null>(null)
   const sseConnectionState = React.useRef<'idle' | 'connecting' | 'connected'>('idle')
   const sseConnectionId = React.useRef<number>(0)
+  const lastEventIdRef = React.useRef<string>("")
   const taskDoneToastShown = React.useRef<boolean>(false)
+  const statsCacheTimerRef = React.useRef<number | null>(null)
+  const pendingStatsCacheRef = React.useRef<StreamStatsCacheRecord | null>(null)
+  const latestStatsSnapshotRef = React.useRef<StreamStatsCacheRecord | null>(null)
+  const resultsCacheTimerRef = React.useRef<number | null>(null)
+  const pendingResultsCacheRef = React.useRef<InjectionCacheRow[] | null>(null)
+  const activeDumpRequestIdRef = React.useRef<string | null>(null)
+
+  // SSE UI state (ref is not reactive).
+  const [sseUiStatus, setSseUiStatus] = React.useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
+  const [lastStatsUpdatedAt, setLastStatsUpdatedAt] = React.useState<number | null>(null)
   
   // Cache key for localStorage
   const CACHE_KEY = `task_stats_${id}`
   
   // Data storage
   const [tableData, setTableData] = React.useState<TableRowData[]>([])
+
+  React.useEffect(() => {
+    setSseInjectionRows([])
+    setSseDumpRows([])
+    setSseDumpedCount(0)
+    setDumpUploadState("idle")
+    setDumpUploadRequestId(null)
+    activeDumpRequestIdRef.current = null
+    lastEventIdRef.current = ""
+    setStatsHydrated(false)
+    setInjectionHydrated(false)
+    setDumpsHydrated(false)
+    setInjectionNextCursor(null)
+    setInjectionHasMore(false)
+    injectionCursorRef.current = null
+    injectionHasMoreRef.current = false
+    pendingStatsCacheRef.current = null
+    pendingResultsCacheRef.current = null
+    if (statsCacheTimerRef.current) {
+      clearTimeout(statsCacheTimerRef.current)
+      statsCacheTimerRef.current = null
+    }
+    if (resultsCacheTimerRef.current) {
+      clearTimeout(resultsCacheTimerRef.current)
+      resultsCacheTimerRef.current = null
+    }
+  }, [id])
+
+  React.useEffect(() => {
+    if (!isLoadingData) setDumpsHydrated(true)
+  }, [isLoadingData])
+
+  React.useEffect(() => {
+    console.log("[State] sseSuccess updated:", {
+      taskId: id,
+      sseSuccess,
+      statsHydrated,
+      lastEventId: lastEventIdRef.current,
+    })
+  }, [id, sseSuccess, statsHydrated])
 
   const columns = React.useMemo(() => getColumns(id), [id])
   
@@ -533,7 +822,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   }
   
   // Save task info to cache
-  const saveCachedTaskInfo = (task: any) => {
+  const saveCachedTaskInfo = (task: Record<string, unknown>) => {
     try {
       localStorage.setItem(TASK_INFO_CACHE_KEY, JSON.stringify({
         task,
@@ -555,91 +844,211 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }
 
-  // Fetch task data from external API
-  const fetchTaskFromExternalAPI = async (): Promise<any | null> => {
+  const flushStatsCacheNow = React.useCallback(() => {
+    const payload = pendingStatsCacheRef.current
+    if (!payload) return
+
+    pendingStatsCacheRef.current = null
     try {
-      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-      const url = `${externalApiDomain}/task/${id}`
-      
-      console.log('[External API] 🌐 Fetching task data from:', url)
-      
-      // Get Supabase session for access token
-      const { createClient } = await import('@/lib/supabase/client')
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      
-      if (!session?.access_token) {
-        console.error('[External API] ❌ No access token available')
-        return null
-      }
-      
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Accept': 'application/json',
-        },
-        signal: controller.signal,
-      })
-      
-      clearTimeout(timeoutId)
-      
-      if (!response.ok) {
-        console.error('[External API] ❌ HTTP error:', response.status)
-        return null
-      }
-      
-      const data = await response.json()
-      console.log('[External API] ✅ Data received:', data)
-      
-      // Parse progress string "0/123" -> { current: 0, target: 123 }
-      let progressData = { current: 0, target: 0 }
-      if (data.progress && typeof data.progress === 'string') {
-        const parts = data.progress.split('/')
-        if (parts.length === 2) {
-          progressData = {
-            current: parseInt(parts[0]) || 0,
-            target: parseInt(parts[1]) || 0
-          }
+      const byteSize = getJsonSizeBytes(payload)
+      if (byteSize <= STREAM_STATS_MAX_BYTES) {
+        localStorage.setItem(STREAM_STATS_CACHE_KEY, JSON.stringify(payload))
+      } else {
+        const reducedPayload: StreamStatsCacheRecord = {
+          ...payload,
+          rpsHistory: payload.rpsHistory.slice(-16),
+          wpmHistory: payload.wpmHistory.slice(-16),
         }
-      }
-      
-      // Map status from external API to internal format
-      let mappedStatus = data.status
-      if (data.status === 'recon_running') {
-        mappedStatus = 'running_recon'
-      } else if (data.status === 'pending') {
-        mappedStatus = 'pending'
-      }
-      // Other statuses: running, paused, complete, failed remain the same
-      
-      return {
-        progress: progressData,
-        credits: data.credits || 0,
-        status: mappedStatus,
-        source: 'external'
+        localStorage.setItem(STREAM_STATS_CACHE_KEY, JSON.stringify(reducedPayload))
       }
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.error('[External API] ⏱️ Request timeout')
-      } else {
-        console.error('[External API] ❌ Request failed:', error)
-      }
-      return null
+      console.error('[Cache] ❌ Failed to write stream stats cache:', error)
     }
-  }
+  }, [STREAM_STATS_CACHE_KEY, STREAM_STATS_MAX_BYTES])
 
-  // Fetch initial task data
-  const fetchTaskData = async (shouldConnectSSE: boolean = false) => {
-    setIsLoadingData(true)
-    
-    // Try to load from cache first
-    const cachedTask = loadCachedTaskInfo()
-    if (cachedTask) {
-      console.log('[TaskDetail] 📦 Using cached task data')
+  const queueStatsCacheSave = React.useCallback(
+    (snapshot: StreamStatsCacheRecord) => {
+      pendingStatsCacheRef.current = snapshot
+      latestStatsSnapshotRef.current = snapshot
+      if (statsCacheTimerRef.current) return
+
+      statsCacheTimerRef.current = window.setTimeout(() => {
+        statsCacheTimerRef.current = null
+        flushStatsCacheNow()
+      }, STREAM_STATS_WRITE_DEBOUNCE_MS)
+    },
+    [STREAM_STATS_WRITE_DEBOUNCE_MS, flushStatsCacheNow]
+  )
+
+  const loadStreamStatsCache = React.useCallback(() => {
+    try {
+      const raw = localStorage.getItem(STREAM_STATS_CACHE_KEY)
+      if (!raw) return false
+
+      const cached = JSON.parse(raw) as StreamStatsCacheRecord
+      const cachedCreditsUsed = Math.max(0, Math.trunc(Number((cached as unknown as { creditsUsed?: unknown }).creditsUsed ?? 0)))
+      const cachedDump = Math.max(0, Math.trunc(Number((cached as unknown as { dump?: unknown }).dump ?? 0)))
+      const cachedDumped = Math.max(0, Math.trunc(Number((cached as unknown as { dumped?: unknown }).dumped ?? 0)))
+      const normalizedCached: StreamStatsCacheRecord = {
+        ...cached,
+        creditsUsed: cachedCreditsUsed,
+        dump: cachedDump,
+        dumped: cachedDumped,
+      }
+      const age = Date.now() - (cached.updatedAt || 0)
+      if (age > STREAM_STATS_TTL_MS) {
+        localStorage.removeItem(STREAM_STATS_CACHE_KEY)
+        return false
+      }
+
+      console.log("[Cache] ✅ Restoring stream stats cache:", {
+        updatedAt: normalizedCached.updatedAt,
+        ageMs: age,
+        lastEventId: normalizedCached.lastEventId,
+        success: normalizedCached.success,
+        failed: normalizedCached.failed,
+        wafDetected: normalizedCached.wafDetected,
+        creditsUsed: normalizedCached.creditsUsed,
+        dump: normalizedCached.dump,
+        dumped: normalizedCached.dumped,
+        progress: normalizedCached.progress,
+        wpm: normalizedCached.wpm,
+        rps: normalizedCached.rps,
+      })
+
+      setProgress({
+        current: Math.max(0, Number(normalizedCached.progress?.current ?? 0)),
+        target: Math.max(0, Number(normalizedCached.progress?.target ?? 0)),
+      })
+      setSseSuccess(Math.max(0, Number(normalizedCached.success ?? 0)))
+      setSseFailed(Math.max(0, Number(normalizedCached.failed ?? 0)))
+      setSseWafDetected(Math.max(0, Number(normalizedCached.wafDetected ?? 0)))
+      setCreditsUsed(normalizedCached.creditsUsed)
+      setSseRps(Math.max(0, Number(normalizedCached.rps ?? 0)))
+      setSseWpm(Math.max(0, Number(normalizedCached.wpm ?? 0)))
+      setSseEtaSeconds(Math.max(0, Number(normalizedCached.etaSeconds ?? 0)))
+      setSseRpsHistory(Array.isArray(normalizedCached.rpsHistory) ? normalizedCached.rpsHistory.slice(-32) : [])
+      setSseWpmHistory(Array.isArray(normalizedCached.wpmHistory) ? normalizedCached.wpmHistory.slice(-32) : [])
+      setSseCategory(normalizedCached.category && typeof normalizedCached.category === "object" ? normalizedCached.category : {})
+      setSseDumpCount(Math.max(0, Number(normalizedCached.dump ?? 0)))
+      setSseDumpedCount(Math.max(0, Number(normalizedCached.dumped ?? 0)))
+
+      if (typeof normalizedCached.lastEventId === "string" && normalizedCached.lastEventId.trim().length > 0) {
+        lastEventIdRef.current = normalizedCached.lastEventId
+      }
+      latestStatsSnapshotRef.current = normalizedCached
+      return true
+    } catch (error) {
+      console.error('[Cache] ❌ Failed to restore stream stats cache:', error)
+      return false
+    }
+  }, [STREAM_STATS_CACHE_KEY, STREAM_STATS_TTL_MS])
+
+  const clearStreamStatsCache = React.useCallback(() => {
+    try {
+      localStorage.removeItem(STREAM_STATS_CACHE_KEY)
+      pendingStatsCacheRef.current = null
+      latestStatsSnapshotRef.current = null
+    } catch (error) {
+      console.error('[Cache] ❌ Failed to clear stream stats cache:', error)
+    }
+  }, [STREAM_STATS_CACHE_KEY])
+
+  const flushResultsCacheNow = React.useCallback(() => {
+    const pendingRows = pendingResultsCacheRef.current
+    if (!pendingRows) return
+
+    pendingResultsCacheRef.current = null
+    void saveResultsCacheForTask(
+      id,
+      pendingRows,
+      RESULTS_CACHE_MAX_ROWS_PER_TASK,
+      RESULTS_CACHE_MAX_BYTES
+    )
+  }, [id, RESULTS_CACHE_MAX_BYTES, RESULTS_CACHE_MAX_ROWS_PER_TASK])
+
+  const queueResultsCacheSave = React.useCallback(
+    (rows: InjectionCacheRow[]) => {
+      pendingResultsCacheRef.current = rows
+      if (resultsCacheTimerRef.current) return
+
+      resultsCacheTimerRef.current = window.setTimeout(() => {
+        resultsCacheTimerRef.current = null
+        flushResultsCacheNow()
+      }, RESULTS_CACHE_WRITE_DEBOUNCE_MS)
+    },
+    [RESULTS_CACHE_WRITE_DEBOUNCE_MS, flushResultsCacheNow]
+  )
+
+  const loadResultsCache = React.useCallback(async () => {
+    const cached = await loadResultsCacheForTask(id)
+    if (!cached) return false
+
+    const age = Date.now() - (cached.updatedAt || 0)
+    if (age > RESULTS_CACHE_TTL_MS) {
+      await clearResultsCacheForTask(id)
+      return false
+    }
+
+    if (!Array.isArray(cached.rows) || cached.rows.length === 0) return false
+
+    setSseInjectionRows(cached.rows.slice(0, INJECTION_WINDOW_LIMIT))
+    return true
+  }, [id, RESULTS_CACHE_TTL_MS, INJECTION_WINDOW_LIMIT])
+
+  const clearResultsCache = React.useCallback(async () => {
+    pendingResultsCacheRef.current = null
+    await clearResultsCacheForTask(id)
+  }, [id])
+
+	  // Fetch initial task data
+		  const fetchTaskData = async (shouldConnectSSE: boolean = false) => {
+		    setIsLoadingData(true)
+		    const restoredStats = loadStreamStatsCache()
+		    if (restoredStats) setStatsHydrated(true)
+
+		    void loadResultsCache().then((restored) => {
+		      if (restored) setInjectionHydrated(true)
+		      return restored
+		    })
+
+		    // Fast path: hydrate stats immediately (no injection items).
+		    // This gives instant Progress/WPM/RPS/ETA/Category before any list work.
+		    void (async () => {
+		      try {
+		        const token = await getAccessToken()
+		        if (!token) return
+		        const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+		        const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+		        snapshotUrl.searchParams.set("include_items", "0")
+		        console.log("[Snapshot] ➡️ stats-only request:", snapshotUrl.toString())
+		        const response = await fetch(snapshotUrl.toString(), {
+		          method: "GET",
+		          headers: {
+		            Authorization: `Bearer ${token}`,
+		            Accept: "application/json",
+		          },
+		        })
+		        console.log("[Snapshot] ⬅️ stats-only response:", response.status)
+		        if (!response.ok) return
+		        const data = (await response.json()) as SnapshotResponse
+		        console.log("[Snapshot] ✅ stats-only payload:", {
+		          hasStats: !!data.stats,
+		          last_event_id: data.last_event_id,
+		        })
+		        if (data.stats) applyStatsPayload(data.stats)
+		        if (data.last_event_id) lastEventIdRef.current = data.last_event_id
+		      } catch (e) {
+		        console.warn("[Snapshot] stats-only fetch failed:", e)
+		      } finally {
+		        if (shouldConnectSSE) connectSSE()
+		      }
+		    })()
+	    
+	    // Try to load from cache first
+	    const cachedTask = loadCachedTaskInfo()
+	    if (cachedTask) {
+	      console.log('[TaskDetail] 📦 Using cached task data')
       
       // Update UI with cached data
       setTaskName(cachedTask.name || '')
@@ -689,70 +1098,16 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       return
     }
     
-    // No cache, fetch from API
-    await fetchTaskDataFromAPI(shouldConnectSSE)
-  }
+	    // No cache, fetch from API
+	    await fetchTaskDataFromAPI(shouldConnectSSE)
+	  }
   
-  // Fetch task data from API (external first, then Supabase fallback)
+  // Fetch task data from project API
   const fetchTaskDataFromAPI = async (shouldConnectSSE: boolean = false) => {
     try {
-      // Step 1: Try external API first
-      const externalData = await fetchTaskFromExternalAPI()
-      
-      if (externalData) {
-        console.log('[TaskDetail] ✅ Using external API data')
-        
-        // Update progress from external API
-        setProgress({
-          current: externalData.progress.current,
-          target: externalData.progress.target
-        })
-        
-        // Update credits from external API
-        setCreditsUsed(externalData.credits)
-        
-        // Update status from external API
-        setTaskStatus(externalData.status)
-        
-        // Cache the external data (simplified cache)
-        saveCachedTaskInfo({
-          status: externalData.status,
-          target: externalData.progress.target,
-          credits_used: externalData.credits,
-          // Keep other fields from previous cache or defaults
-          name: taskName || 'Task',
-          file_name: listsFile || 'Unknown',
-        })
-        
-        // Handle status-based actions
-        if (externalData.status === 'running_recon') {
-          console.log('[TaskDetail] 🔄 Status is running_recon, opening loader')
-          const hasCachedData = loadCachedStats()
-          if (!hasCachedData) {
-            console.log('[TaskDetail] ℹ️ No cached stats data')
-          }
-          setShowStartLoader(true)
-          setLoaderStep(3)
-          if (shouldConnectSSE) {
-            setTimeout(() => connectSSE(), 500)
-          }
-        } else if (externalData.status === 'running') {
-          console.log('[TaskDetail] ▶️ Status is running, connecting SSE without loader')
-          if (shouldConnectSSE) {
-            setTimeout(() => connectSSE(), 500)
-          }
-        }
-        
-        // Still fetch full data from Supabase in background for other fields
-        // Don't connect SSE again since we already connected above
-        fetchFullTaskDataFromSupabase(false)
-        return
-      }
-      
-      // Step 2: Fallback to Supabase if external API failed
-      console.log('[TaskDetail] ⚠️ External API failed, falling back to Supabase')
       await fetchFullTaskDataFromSupabase(shouldConnectSSE)
-      
+      // Don't block first paint on injection items. Stats snapshot runs early in fetchTaskData().
+      void fetchRealtimeSnapshot()
     } catch (err) {
       console.error("[TaskDetail] Fetch error:", err)
       toast.error("Please Try Again")
@@ -837,6 +1192,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         // 任务完成或失败，清除所有缓存
         clearCachedStats()
         clearCachedTaskInfo()
+        clearStreamStatsCache()
+        void clearResultsCache()
       }
 
       // Task data loaded successfully
@@ -892,21 +1249,27 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }, [baseElapsedMs, lastUpdateTime])
 
-  // Initial fetch - only run once on mount, after task validation
+  // Initial fetch - run once after task validation passes
   React.useEffect(() => {
     if (!hasFetched.current && !isCheckingTask && !taskNotFound) {
       hasFetched.current = true
-      fetchTaskData(true) // Fetch task data and auto-connect SSE if running_recon
-      
-      // Always try to connect SSE when entering the page
-      console.log('[TaskDetail] 🔌 Auto-connecting SSE on page load')
-      setTimeout(() => {
-        connectSSE()
-      }, 1000)
+      fetchTaskData(true)
     }
+  }, [isCheckingTask, taskNotFound])
 
-    // Cleanup ONLY on unmount (when leaving the page)
+  // Cleanup ONLY on unmount (when leaving the page)
+  React.useEffect(() => {
     return () => {
+      if (statsCacheTimerRef.current) {
+        clearTimeout(statsCacheTimerRef.current)
+        statsCacheTimerRef.current = null
+      }
+      if (resultsCacheTimerRef.current) {
+        clearTimeout(resultsCacheTimerRef.current)
+        resultsCacheTimerRef.current = null
+      }
+      flushStatsCacheNow()
+      flushResultsCacheNow()
       sseConnectionState.current = 'idle'
       sseConnectionId.current += 1
       if (sseAbortController.current) {
@@ -921,8 +1284,44 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       if (timeAnimationInterval.current) {
         clearInterval(timeAnimationInterval.current)
       }
+      if (etaIntervalRef.current) {
+        clearInterval(etaIntervalRef.current)
+        etaIntervalRef.current = null
+      }
     }
-  }, [isCheckingTask, taskNotFound])
+  }, [flushResultsCacheNow, flushStatsCacheNow])
+
+  // Local ETA countdown so the label keeps moving between stats updates.
+  React.useEffect(() => {
+    // Stop any previous timer.
+    if (etaIntervalRef.current) {
+      clearInterval(etaIntervalRef.current)
+      etaIntervalRef.current = null
+    }
+
+    if (!Number.isFinite(sseEtaSeconds) || sseEtaSeconds <= 0) {
+      setEtaCountdownSeconds(null)
+      return
+    }
+
+    // Sync countdown from backend.
+    setEtaCountdownSeconds(Math.max(0, Math.floor(sseEtaSeconds)))
+
+    etaIntervalRef.current = window.setInterval(() => {
+      setEtaCountdownSeconds((prev) => {
+        if (prev === null) return null
+        if (prev <= 1) return 0
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => {
+      if (etaIntervalRef.current) {
+        clearInterval(etaIntervalRef.current)
+        etaIntervalRef.current = null
+      }
+    }
+  }, [sseEtaSeconds])
 
   // Handle visibility change - keep connection alive when switching tabs
   React.useEffect(() => {
@@ -931,26 +1330,40 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         console.log('[SSE] Tab hidden - keeping connection alive')
       } else {
         console.log('[SSE] Tab visible - connection still active')
+        if (sseConnectionState.current === 'idle') {
+          console.log('[SSE] 🔄 Reconnecting on tab visible')
+          connectSSE()
+        }
+      }
+    }
+
+    const handleOnline = () => {
+      if (sseConnectionState.current === 'idle') {
+        console.log('[SSE] 🌐 Network online, reconnecting SSE')
+        connectSSE()
       }
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('online', handleOnline)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('online', handleOnline)
     }
   }, [])
 
   // SSE connection function with retry
-  const connectSSE = async () => {
-    const timestamp = new Date().toISOString()
-    if (sseConnectionState.current !== 'idle' && sseAbortController.current && !sseAbortController.current.signal.aborted) {
-      console.log(`[SSE] ⏭️ [${timestamp}] Connection already active, skipping new connect`)
-      return
-    }
-    console.log(`[SSE] 🚀 [${timestamp}] Starting SSE connection for task:`, id, 'Retry count:', sseRetryCount.current)
-    sseConnectionState.current = 'connecting'
-    const connectionId = ++sseConnectionId.current
+	  const connectSSE = async () => {
+	    const timestamp = new Date().toISOString()
+	    if (sseConnectionState.current !== 'idle' && sseAbortController.current && !sseAbortController.current.signal.aborted) {
+	      console.log(`[SSE] ⏭️ [${timestamp}] Connection already active, skipping new connect`)
+	      return
+	    }
+	    console.log(`[SSE] 🚀 [${timestamp}] Starting SSE connection for task:`, id, 'Retry count:', sseRetryCount.current)
+	    sseConnectionState.current = 'connecting'
+	    setSseUiStatus('connecting')
+	    const connectionId = ++sseConnectionId.current
     
     // Clear any existing retry timer
     if (sseRetryTimer.current) {
@@ -972,12 +1385,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       console.log(`[SSE] 🆕 [${timestamp}] Created new abort controller`)
       console.log('[SSE] ✅ Created new AbortController')
 
-      // Get Supabase session for access token
-      const { createClient } = await import('@/lib/supabase/client')
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      
-      if (!session?.access_token) {
+      const accessToken = await getAccessToken()
+      if (!accessToken) {
         console.error('[SSE] ❌ No access token available')
         // Retry after 3 seconds
         scheduleSSERetry()
@@ -986,14 +1395,17 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       console.log('[SSE] ✅ Access token obtained')
 
       const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
-      const sseUrl = `${externalApiDomain}/sse/${id}`
+      const sseUrlBuilder = new URL(`${externalApiDomain}/sse/${id}`)
+      // Query fallback (older servers). Primary compensation is via Last-Event-ID header below.
+      if (lastEventIdRef.current) sseUrlBuilder.searchParams.set("since", lastEventIdRef.current)
+      const sseUrl = sseUrlBuilder.toString()
       
       console.log('[SSE] 🔗 Connecting to:', sseUrl)
 
       const response = await fetch(sseUrl, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          'Authorization': `Bearer ${accessToken}`,
           'Accept': 'text/event-stream',
         },
         signal: localController.signal,
@@ -1001,19 +1413,21 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
       console.log('[SSE] 📡 Fetch response status:', response.status)
 
-      if (!response.ok) {
-        console.error('[SSE] ❌ Connection failed with status:', response.status)
-        // Retry after delay
-        if (connectionId === sseConnectionId.current) {
-          sseConnectionState.current = 'idle'
-          scheduleSSERetry(connectionId)
-        }
-        return
-      }
+	      if (!response.ok) {
+	        console.error('[SSE] ❌ Connection failed with status:', response.status)
+	        // Retry after delay
+	        if (connectionId === sseConnectionId.current) {
+	          sseConnectionState.current = 'idle'
+	          setSseUiStatus('error')
+	          scheduleSSERetry(connectionId)
+	        }
+	        return
+	      }
 
-      // Reset retry count on successful connection
-      sseRetryCount.current = 0
-      sseConnectionState.current = 'connected'
+	      // Reset retry count on successful connection
+	      sseRetryCount.current = 0
+	      sseConnectionState.current = 'connected'
+	      setSseUiStatus('connected')
 
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
@@ -1033,149 +1447,427 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const readStream = async () => {
         console.log('[SSE] 📖 Starting stream reader loop')
         let currentEvent = ''
+        let currentEventId = ''
+        let currentDataLines: string[] = []
+        let sseBuffer = ''
+        let messageCount = 0
+        let statsMessageCount = 0
+
+        const dispatchSSEEvent = () => {
+          const rawData = currentDataLines.join('\n').trim()
+          const fallbackEvent = currentEvent || 'message'
+
+          if (!rawData) {
+            if (currentEvent) {
+              console.log(`[SSE] ℹ️ Event "${fallbackEvent}" finished without data payload`)
+            }
+            currentEvent = ''
+            currentEventId = ''
+            currentDataLines = []
+            return
+          }
+
+          messageCount += 1
+          console.log(`[SSE] 📨 Dispatch #${messageCount}:`, {
+            event: fallbackEvent,
+            rawLength: rawData.length,
+            rawData,
+          })
+
+          try {
+            const parsed = JSON.parse(rawData)
+            const eventType = parsed.type || currentEvent || 'message'
+            if (currentEventId) {
+              lastEventIdRef.current = currentEventId
+              if (latestStatsSnapshotRef.current) {
+                queueStatsCacheSave({
+                  ...latestStatsSnapshotRef.current,
+                  updatedAt: Date.now(),
+                  lastEventId: currentEventId,
+                })
+              }
+            }
+            console.log(`[SSE] 📊 Parsed #${messageCount}:`, {
+              type: eventType,
+              taskid: parsed.taskid,
+              eventId: currentEventId || parsed.event_id,
+            })
+            
+            if (eventType === 'connected') {
+              console.log('[SSE] 🔌 Connection confirmed:', parsed)
+            } else if (eventType === 'stats') {
+              statsMessageCount += 1
+              const stats = parsed as StatsSSEPayload
+              applyStatsPayload(stats)
+
+              console.log(`[SSE] ✅ Stats applied (#${statsMessageCount})`, {
+                progress: `${stats.websites_done ?? 0}/${stats.websites_total ?? 0}`,
+                success: stats.success ?? 0,
+                failed: stats.failed ?? 0,
+                wafDetected: stats.waf_detected ?? 0,
+                rps: stats.rps ?? 0,
+                wpm: stats.wpm ?? 0,
+                etaSeconds: stats.eta_seconds ?? 0,
+                dump: stats.dump ?? 0,
+                dumped: stats.dumped ?? 0,
+                rpsHistoryPoints: stats.rps_history?.length ?? 0,
+                wpmHistoryPoints: stats.wpm_history?.length ?? 0,
+                categoryKeys: Object.keys(stats.category || {}),
+              })
+            } else if (eventType === 'results_batch') {
+              const batch = parsed as ResultsBatchSSEPayload
+              const items = Array.isArray(batch.items) ? batch.items : []
+              if (typeof batch.credits === "number" && Number.isFinite(batch.credits)) {
+                const nextCredits = Math.max(0, Math.trunc(batch.credits))
+                setCreditsUsed((prev) => (nextCredits > prev ? nextCredits : prev))
+                if (latestStatsSnapshotRef.current) {
+                  queueStatsCacheSave({
+                    ...latestStatsSnapshotRef.current,
+                    updatedAt: Date.now(),
+                    lastEventId: currentEventId || latestStatsSnapshotRef.current.lastEventId,
+                    creditsUsed: nextCredits,
+                  })
+                }
+              }
+	              if (items.length > 0) {
+	                setInjectionHydrated(true)
+	                setSseInjectionRows((prev) => {
+	                  const incomingRows = items
+	                    .filter((item) => item.domain && item.domain.trim().length > 0)
+	                    .map((item, idx) => ({
+	                      key: `${currentEventId || Date.now()}-${idx}-${item.domain}`,
+	                      domain: (item.domain || "-").trim(),
+	                      country: (item.country || "-").trim() || "-",
+	                      category: (item.category || "-").trim() || "-",
+	                      waf: !!item.waf,
+	                    }))
+
+	                  const merged = [...incomingRows, ...prev]
+	                  const indexBySig = new Map<string, number>()
+	                  const deduped: typeof merged = []
+	                  for (const row of merged) {
+	                    const sig = `${row.domain}|${row.country}|${row.category}`
+	                    const existingIndex = indexBySig.get(sig)
+	                    if (existingIndex !== undefined) {
+	                      if (row.waf) deduped[existingIndex] = { ...deduped[existingIndex], waf: true }
+	                      continue
+	                    }
+	                    indexBySig.set(sig, deduped.length)
+	                    deduped.push(row)
+	                    if (deduped.length >= INJECTION_WINDOW_LIMIT) break
+	                  }
+	                  const nextRows = deduped
+	                  queueResultsCacheSave(nextRows)
+	                  return nextRows
+	                })
+	              }
+
+	              console.log('[SSE] ✅ results_batch applied:', {
+	                received: items.length,
+                  credits: batch.credits,
+	              })
+            } else if (eventType === "dumper_stats") {
+              const payload = parsed as DumperStatsSSEPayload
+              const domains = Array.isArray(payload.domains) ? payload.domains : []
+              if (typeof payload.dump === "number" && Number.isFinite(payload.dump)) {
+                setSseDumpCount(Math.max(0, Math.trunc(payload.dump)))
+              }
+              if (typeof payload.dumped === "number" && Number.isFinite(payload.dumped)) {
+                setSseDumpedCount(Math.max(0, Math.trunc(payload.dumped)))
+              }
+              if (domains.length > 0) {
+                setDumpsHydrated(true)
+                setSseDumpRows((prev) => {
+                  const nowKey = currentEventId || Date.now().toString()
+                  const incoming = domains
+                    .filter((item) => item.domain && item.domain.trim().length > 0)
+                    .map((item, idx) => {
+                      const domain = (item.domain || "-").trim()
+                      const country = (item.country || "-").trim() || "-"
+                      const category = (item.category || "-").trim() || "-"
+                      const totalRaw = typeof item.total === "number" && Number.isFinite(item.total) ? Math.max(0, Math.trunc(item.total)) : 0
+                      const progressRaw =
+                        typeof item.progress === "number" && Number.isFinite(item.progress) ? Math.max(0, Math.trunc(item.progress)) : 0
+                      const progress = totalRaw > 0 ? Math.min(progressRaw, totalRaw) : progressRaw
+                      const total = totalRaw
+
+                      const parsedRows =
+                        typeof item.rows === "number"
+                          ? Math.max(0, Math.trunc(item.rows))
+                          : Math.max(0, Math.trunc(Number(item.rows ?? 0)))
+                      const rows = Number.isFinite(parsedRows) ? parsedRows : 0
+
+                      const statusText = (item.status || "").trim()
+                      // Some backends only send `status: "x/y"` without explicit progress/total fields.
+                      // Parse it as a fallback so UI still updates.
+                      let effectiveProgress = progress
+                      let effectiveTotal = total
+                      if ((!Number.isFinite(effectiveTotal) || effectiveTotal <= 0) && statusText.includes("/")) {
+                        const match = statusText.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/)
+                        if (match) {
+                          effectiveProgress = Math.max(0, Math.trunc(Number(match[1] || 0)))
+                          effectiveTotal = Math.max(0, Math.trunc(Number(match[2] || 0)))
+                        }
+                      }
+
+                      const statusLower = statusText.toLowerCase()
+                      const isDumped =
+                        statusLower === "dumped" || (effectiveTotal > 0 && effectiveProgress >= effectiveTotal)
+
+                      const rawPercent = effectiveTotal > 0 ? (effectiveProgress / effectiveTotal) * 100 : 0
+                      const percentDone = !isDumped
+                        ? Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              // Avoid "stuck at 0%" when progress has started but is <0.5%.
+                              effectiveProgress > 0 && rawPercent > 0 && rawPercent < 1 ? 1 : Math.round(rawPercent)
+                            )
+                          )
+                        : 100
+
+                      return {
+                        key: `${nowKey}-${idx}-${domain}`,
+                        domain,
+                        country,
+                        category,
+                        rows: rows > 0 ? rows : total,
+                        statusKind: isDumped ? ("dumped" as const) : ("progress" as const),
+                        statusLabel: isDumped
+                          ? "Dumped"
+                          : effectiveTotal > 0
+                            ? `${effectiveProgress.toLocaleString()}/${effectiveTotal.toLocaleString()}`
+                            : statusText,
+                        percentDone: isDumped ? 100 : percentDone,
+                      }
+                    })
+
+                  if (process.env.NODE_ENV !== "production") {
+                    console.log("[SSE][dumper_stats] rows computed:", {
+                      eventId: currentEventId,
+                      preset: payload.preset,
+                      dumped: payload.dumped,
+                      prevRows: prev.length,
+                      incomingRows: incoming.length,
+                      preview: incoming.slice(0, 5).map((r) => ({
+                        domain: r.domain,
+                        statusKind: r.statusKind,
+                        percentDone: r.percentDone,
+                        statusLabel: r.statusLabel,
+                        rows: r.rows,
+                      })),
+                    })
+                  }
+
+                  const merged = [...incoming, ...prev]
+                  const indexBySig = new Map<string, number>()
+                  const deduped: typeof merged = []
+                  for (const row of merged) {
+                    const sig = `${row.domain}|${row.country}|${row.category}`
+                    const existingIndex = indexBySig.get(sig)
+                    if (existingIndex !== undefined) {
+                      const existing = deduped[existingIndex]
+                      // `merged` is `[incoming, ...prev]`, so the first occurrence is the newest.
+                      // Keep the newest by default; only override if the older row is "Dumped"
+                      // and the newer row is still in-progress.
+                      if (row.statusKind === "dumped" && existing.statusKind !== "dumped") {
+                        deduped[existingIndex] = row
+                      }
+                      continue
+                    }
+                    indexBySig.set(sig, deduped.length)
+                    deduped.push(row)
+                  }
+
+                  // Keep the summary counter in sync even if backend doesn't send dumped reliably.
+                  const dumpedFromRows = deduped.reduce((acc, row) => (row.statusKind === "dumped" ? acc + 1 : acc), 0)
+                  if (!(typeof payload.dumped === "number" && Number.isFinite(payload.dumped))) {
+                    setSseDumpedCount(dumpedFromRows)
+                  }
+                  if (!(typeof payload.dump === "number" && Number.isFinite(payload.dump))) {
+                    setSseDumpCount(deduped.length)
+                  }
+
+                  if (process.env.NODE_ENV !== "production") {
+                    console.log("[SSE][dumper_stats] state after merge:", {
+                      eventId: currentEventId,
+                      totalRows: deduped.length,
+                      dumpedFromRows,
+                      top: deduped.slice(0, 5).map((r) => ({
+                        domain: r.domain,
+                        statusKind: r.statusKind,
+                        percentDone: r.percentDone,
+                        statusLabel: r.statusLabel,
+                      })),
+                    })
+                  }
+
+                  return deduped
+                })
+              }
+
+              console.log("[SSE] ✅ dumper_stats applied:", {
+                dump: payload.dump,
+                received: domains.length,
+                dumped: payload.dumped,
+                preset: payload.preset,
+              })
+            } else if (eventType === "dump_file_ready") {
+              const payload = (parsed?.payload || parsed || {}) as Record<string, unknown>
+              const eventRequestId =
+                (typeof parsed?.request_id === "string" ? parsed.request_id : null) ||
+                (typeof payload.request_id === "string" ? payload.request_id : null)
+              const activeRequestId = activeDumpRequestIdRef.current
+
+              if (activeRequestId && eventRequestId && eventRequestId !== activeRequestId) {
+                console.log("[SSE] ℹ️ dump_file_ready ignored (request_id mismatch)", {
+                  eventRequestId,
+                  activeRequestId,
+                })
+              } else {
+                const downloadUrl =
+                  (typeof payload.downloadurl === "string" && payload.downloadurl) ||
+                  (typeof payload.download_url === "string" && payload.download_url) ||
+                  (typeof parsed?.downloadurl === "string" && parsed.downloadurl) ||
+                  (typeof parsed?.download_url === "string" && parsed.download_url) ||
+                  ""
+                if (downloadUrl) {
+                  const a = document.createElement("a")
+                  a.href = downloadUrl
+                  a.download = "dump.zip"
+                  document.body.appendChild(a)
+                  a.click()
+                  a.remove()
+                  setDumpUploadState("done")
+                  setDumpUploadRequestId(eventRequestId || activeRequestId || null)
+                  activeDumpRequestIdRef.current = null
+                  toast.success("Dump download started")
+                  console.log("[SSE] ✅ dump_file_ready handled", { eventRequestId, activeRequestId })
+                } else {
+                  setDumpUploadState("failed")
+                  toast.error("dump_file_ready missing downloadurl")
+                  console.error("[SSE] ❌ dump_file_ready missing downloadurl", parsed)
+                }
+              }
+            } else if (eventType === "dump_file_failed") {
+              const payload = (parsed?.payload || parsed || {}) as Record<string, unknown>
+              const eventRequestId =
+                (typeof parsed?.request_id === "string" ? parsed.request_id : null) ||
+                (typeof payload.request_id === "string" ? payload.request_id : null)
+              const activeRequestId = activeDumpRequestIdRef.current
+
+              if (activeRequestId && eventRequestId && eventRequestId !== activeRequestId) {
+                console.log("[SSE] ℹ️ dump_file_failed ignored (request_id mismatch)", {
+                  eventRequestId,
+                  activeRequestId,
+                })
+              } else {
+                const msg =
+                  (typeof payload.error === "string" && payload.error) ||
+                  (typeof parsed?.error === "string" && parsed.error) ||
+                  "dump file upload failed"
+                setDumpUploadState("failed")
+                setDumpUploadRequestId(eventRequestId || activeRequestId || null)
+                activeDumpRequestIdRef.current = null
+                toast.error(msg)
+                console.error("[SSE] ❌ dump_file_failed:", { eventRequestId, msg, payload, parsed })
+              }
+            } else if (eventType === "task_done") {
+              const payload = parsed as TaskDoneSSEPayload
+              const final = payload.final || {}
+              applyStatsPayload({
+                websites_total:
+                  typeof final.websites_total === "number"
+                    ? final.websites_total
+                    : Number(latestStatsSnapshotRef.current?.progress?.target ?? 0),
+                websites_done:
+                  typeof final.websites_done === "number"
+                    ? final.websites_done
+                    : Number(latestStatsSnapshotRef.current?.progress?.current ?? 0),
+                remaining: typeof final.remaining === "number" ? final.remaining : 0,
+                success:
+                  typeof final.success === "number"
+                    ? final.success
+                    : Number(latestStatsSnapshotRef.current?.success ?? 0),
+                failed:
+                  typeof final.failed === "number"
+                    ? final.failed
+                    : Number(latestStatsSnapshotRef.current?.failed ?? 0),
+                credits:
+                  typeof payload.credits === "number"
+                    ? payload.credits
+                    : Number(latestStatsSnapshotRef.current?.creditsUsed ?? 0),
+                eta_seconds: 0,
+              })
+              setTaskStatus("complete")
+              setTaskDoneReceived(true)
+              setLoaderIsDone(true)
+              setShowStartLoader(false)
+              console.log("[SSE] ✅ task_done applied:", {
+                taskid: payload.taskid,
+                status: payload.status,
+                final,
+              })
+            } else {
+              console.log('[SSE] 📴 Message ignored:', eventType)
+            }
+          } catch (e) {
+            console.error('[SSE] ❌ JSON parse error:', e, {
+              event: fallbackEvent,
+              rawData,
+            })
+          } finally {
+            currentEvent = ''
+            currentEventId = ''
+            currentDataLines = []
+          }
+        }
+
         try {
           while (true) {
             const { done, value } = await reader.read()
             
             if (done) {
+              if (sseBuffer.trim().length > 0) {
+                console.log('[SSE] ⚠️ Stream ended with partial buffer:', sseBuffer)
+              }
+              if (currentDataLines.length > 0 || currentEvent) {
+                console.log('[SSE] ⚠️ Stream ended before blank line delimiter, forcing dispatch')
+                dispatchSSEEvent()
+              }
               console.log('[SSE] 🏁 Stream ended')
               break
             }
 
             const chunk = decoder.decode(value, { stream: true })
             console.log('[SSE] 📦 Received chunk, length:', chunk.length)
-            const lines = chunk.split('\n')
+            sseBuffer += chunk
 
-            for (const line of lines) {
-              if (line.startsWith('event: ')) {
-                // Extract event type from SSE event field
-                currentEvent = line.slice(7).trim()
+            let lineBreakIndex = sseBuffer.indexOf('\n')
+            while (lineBreakIndex !== -1) {
+              const rawLine = sseBuffer.slice(0, lineBreakIndex)
+              sseBuffer = sseBuffer.slice(lineBreakIndex + 1)
+              const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+
+              if (line.startsWith('event:')) {
+                currentEvent = line.slice(6).trim()
                 console.log('[SSE] 🏷️ Event type:', currentEvent)
-              } else if (line.startsWith('data: ')) {
-                const data = line.slice(6)
-                console.log('[SSE] 📨 Raw data:', data)
-                
-                try {
-                  const parsed = JSON.parse(data)
-                  // Use event type from SSE event field if type is not in data
-                  const eventType = parsed.type || currentEvent
-                  console.log('[SSE] 📊 Parsed event:', {
-                    type: eventType,
-                    taskid: parsed.taskid,
-                    data: parsed
-                  })
-                  
-                  // Reset current event after processing
-                  currentEvent = ''
-                  
-                  // Handle different SSE events
-                  if (eventType === 'task_stats' && parsed.tasks && parsed.tasks.length > 0) {
-                    console.log('[SSE] 📈 Processing task_stats event, tasks count:', parsed.tasks.length)
-                    const taskData = parsed.tasks.find((t: any) => t.taskid === id)
-                    
-                    if (taskData) {
-                      console.log('[SSE] ✅ Found matching task data:', {
-                        taskid: taskData.taskid,
-                        progress: taskData.progress,
-                        groups_done: taskData.groups_done,
-                        groups_total: taskData.groups_total,
-                        elapsed_ms: taskData.elapsed_ms,
-                        credits_used: taskData.credits_used
-                      })
-                      
-                      // Calculate progress percent for multi-step loader
-                      const progressPercent = Math.round((taskData.progress || 0) * 100)
-                      console.log('[SSE] 🎯 Updating multi-step loader progress:', progressPercent + '%')
-                      
-                      // Update recon progress for multi-step loader ONLY
-                      setReconProgress(progressPercent)
-                      
-                      // Update recon stats for multi-step loader ONLY
-                      const elapsedMs = taskData.elapsed_ms || 0
-                      setBaseElapsedMs(elapsedMs)
-                      setLastUpdateTime(Date.now())
-                      
-                      const newReconStats = {
-                        current: taskData.groups_done || 0,
-                        total: taskData.groups_total || 0,
-                        timeRunning: formatElapsedTime(elapsedMs)
-                      }
-                      setReconStats(newReconStats)
-                      
-                      // Save to cache (for multi-step loader state)
-                      saveCachedStats({
-                        progress: progressPercent,
-                        reconStats: newReconStats,
-                        baseElapsedMs: elapsedMs,
-                        creditsUsed: taskData.credits_used || 0
-                      })
-                    } else {
-                      console.log('[SSE] ⚠️ No matching task found for id:', id)
-                    }
-                  } else if (eventType === 'task_done') {
-                    const timestamp = new Date().toISOString()
-                    console.log(`[SSE] 🎉 [${timestamp}] Task done received:`, parsed)
-                    console.log(`[SSE] 📍 [${timestamp}] Current taskDoneReceived state:`, taskDoneReceived)
-                    
-                    // Check if it's for this task
-                    if (parsed.taskid === id) {
-                      console.log(`[SSE] ✅ [${timestamp}] Task done matches current task`)
-                      console.log(`[SSE] 🔍 [${timestamp}] Setting taskDoneReceived to true`)
-                      setTaskDoneReceived(true)
-                      setReconProgress(100)
-                      
-                      // Update status to "running" (In Progress) to avoid database query
-                      console.log(`[SSE] 🔄 [${timestamp}] Updating status to running (In Progress)`)
-                      setTaskStatus('running')
-                      
-                      // Update credits if credits_reward is provided
-                      if (parsed.credits_reward !== undefined) {
-                        console.log(`[SSE] 💰 [${timestamp}] Credits reward received:`, parsed.credits_reward)
-                        setCreditsUsed(prev => prev + parsed.credits_reward)
-                      }
-                      
-                      // Update progress current if success_count is provided
-                      if (parsed.success_count !== undefined) {
-                        console.log(`[SSE] 📊 [${timestamp}] Success count:`, parsed.success_count)
-                        setProgress(prev => ({ ...prev, current: parsed.success_count }))
-                      }
-                      
-                      // Clear cache when task is done
-                      console.log(`[SSE] 🗑️ [${timestamp}] Clearing cache`)
-                      clearCachedStats()
-                      clearCachedTaskInfo()
-                      
-                      // Auto close loader after task done
-                      console.log(`[SSE] 🔒 [${timestamp}] Scheduling auto-close loader in 2 seconds`)
-                      setTimeout(() => {
-                        console.log(`[SSE] 🎬 [${new Date().toISOString()}] Executing auto-close callback`)
-                        setShowStartLoader(false)
-                        setTaskDoneReceived(false)
-                        setLoaderIsDone(false)
-                        
-                        // Only show toast once
-                        if (!taskDoneToastShown.current) {
-                          console.log(`[SSE] 🎉 [${new Date().toISOString()}] Showing completion toast (first time)`)
-                          taskDoneToastShown.current = true
-                          toast.success('Recon Completed Successfully')
-                        } else {
-                          console.log(`[SSE] ⏭️ [${new Date().toISOString()}] Skipping toast (already shown)`)
-                        }
-                      }, 2000)
-                    } else {
-                      console.log(`[SSE] ⚠️ [${timestamp}] Task done for different task:`, parsed.taskid, 'Expected:', id)
-                    }
-                  } else if (eventType === 'connected') {
-                    console.log('[SSE] 🔌 Connection confirmed:', parsed)
-                  } else if (eventType) {
-                    console.log('[SSE] ❓ Unknown event type:', eventType)
-                  }
-                } catch (e) {
-                  console.error('[SSE] ❌ JSON parse error:', e, 'Raw data:', data)
-                }
+              } else if (line.startsWith('id:')) {
+                currentEventId = line.slice(3).trim()
+                console.log('[SSE] 🆔 Event id:', currentEventId)
+              } else if (line.startsWith('data:')) {
+                const data = line.slice(5).trimStart()
+                currentDataLines.push(data)
+                console.log('[SSE] 🧩 Data line captured:', data)
+              } else if (line === '') {
+                dispatchSSEEvent()
+              } else if (line.startsWith(':')) {
+                console.log('[SSE] 💓 Heartbeat/comment:', line)
               } else if (line.trim()) {
-                console.log('[SSE] 📝 Non-data line:', line)
+                console.log('[SSE] 📝 Unknown SSE line:', line)
               }
+
+              lineBreakIndex = sseBuffer.indexOf('\n')
             }
           }
         } catch (error) {
@@ -1206,22 +1898,24 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       }
 
       readStream()
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('[SSE] 🛑 Connection aborted during setup')
-        if (connectionId === sseConnectionId.current) {
-          sseConnectionState.current = 'idle'
-        }
-      } else {
-        console.error('[SSE] ❌ Connection error:', error)
-        // Retry on error
-        if (connectionId === sseConnectionId.current) {
-          sseConnectionState.current = 'idle'
-          scheduleSSERetry(connectionId)
-        }
-      }
-    }
-  }
+	    } catch (error) {
+	      if (error instanceof Error && error.name === 'AbortError') {
+	        console.log('[SSE] 🛑 Connection aborted during setup')
+	        if (connectionId === sseConnectionId.current) {
+	          sseConnectionState.current = 'idle'
+	          setSseUiStatus('idle')
+	        }
+	      } else {
+	        console.error('[SSE] ❌ Connection error:', error)
+	        // Retry on error
+	        if (connectionId === sseConnectionId.current) {
+	          sseConnectionState.current = 'idle'
+	          setSseUiStatus('error')
+	          scheduleSSERetry(connectionId)
+	        }
+	      }
+	    }
+	  }
   
   // Schedule SSE retry with exponential backoff
   const scheduleSSERetry = (connectionId?: number) => {
@@ -1338,6 +2032,400 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }
 
+		  const applyStatsPayload = React.useCallback((payload: Partial<StatsSSEPayload>) => {
+		    setStatsHydrated(true)
+        setLastStatsUpdatedAt(Date.now())
+		    const total = Number(payload.websites_total ?? 0)
+		    const done = Number(payload.websites_done ?? 0)
+		    const success = Number(payload.success ?? 0)
+		    const failed = Number(payload.failed ?? 0)
+    const wafDetected = Number(payload.waf_detected ?? 0)
+    const credits = payload.credits
+    const rps = Number(payload.rps ?? 0)
+    const wpm = Number(payload.wpm ?? 0)
+    const etaSeconds = Number(payload.eta_seconds ?? 0)
+    const dump = Number(payload.dump ?? Number(latestStatsSnapshotRef.current?.dump ?? 0))
+    const dumped = Number(payload.dumped ?? Number(latestStatsSnapshotRef.current?.dumped ?? 0))
+    const rpsHistory = Array.isArray(payload.rps_history)
+      ? payload.rps_history.map((v) => Number(v) || 0).slice(-32)
+      : []
+    const wpmHistory = Array.isArray(payload.wpm_history)
+      ? payload.wpm_history.map((v) => Number(v) || 0).slice(-32)
+      : []
+	    const categoryData =
+	      payload.category && typeof payload.category === "object" ? payload.category : {}
+
+	    console.log("[Stats] ✅ applyStatsPayload:", {
+	      websites_total: payload.websites_total,
+	      websites_done: payload.websites_done,
+	      success: payload.success,
+	      failed: payload.failed,
+	      waf_detected: payload.waf_detected,
+        credits: payload.credits,
+        dump: payload.dump,
+        dumped: payload.dumped,
+	      wpm: payload.wpm,
+	      rps: payload.rps,
+	      eta_seconds: payload.eta_seconds,
+	      lastEventId: lastEventIdRef.current,
+	    })
+
+	    setProgress({
+	      current: Math.max(0, done),
+	      target: Math.max(0, total),
+	    })
+    setSseSuccess(Math.max(0, success))
+    setSseFailed(Math.max(0, failed))
+    setSseWafDetected(Math.max(0, wafDetected))
+    if (typeof credits === "number" && Number.isFinite(credits)) {
+      const nextCredits = Math.max(0, Math.trunc(credits))
+      setCreditsUsed((prev) => (nextCredits > prev ? nextCredits : prev))
+    }
+    setSseRps(Math.max(0, rps))
+    setSseWpm(Math.max(0, wpm))
+    setSseEtaSeconds(Math.max(0, etaSeconds))
+    setSseRpsHistory(rpsHistory)
+	    setSseWpmHistory(wpmHistory)
+	    setSseCategory(categoryData)
+    setSseDumpCount(Math.max(0, Math.trunc(Number.isFinite(dump) ? dump : 0)))
+    setSseDumpedCount(Math.max(0, Math.trunc(Number.isFinite(dumped) ? dumped : 0)))
+      const creditsUsedForCache =
+        typeof credits === "number" && Number.isFinite(credits)
+          ? Math.max(0, Math.trunc(credits))
+          : Math.max(0, Math.trunc(Number(latestStatsSnapshotRef.current?.creditsUsed ?? 0)))
+    const dumpForCache = Math.max(0, Math.trunc(Number.isFinite(dump) ? dump : 0))
+    const dumpedForCache = Math.max(0, Math.trunc(Number.isFinite(dumped) ? dumped : 0))
+    queueStatsCacheSave({
+      updatedAt: Date.now(),
+      lastEventId: lastEventIdRef.current,
+      progress: {
+        current: Math.max(0, done),
+        target: Math.max(0, total),
+      },
+      success: Math.max(0, success),
+      failed: Math.max(0, failed),
+      wafDetected: Math.max(0, wafDetected),
+      creditsUsed: creditsUsedForCache,
+      rps: Math.max(0, rps),
+      wpm: Math.max(0, wpm),
+      etaSeconds: Math.max(0, etaSeconds),
+      rpsHistory,
+      wpmHistory,
+      category: categoryData,
+      dump: dumpForCache,
+      dumped: dumpedForCache,
+    })
+	  }, [queueStatsCacheSave])
+
+  const getAccessToken = React.useCallback(async () => {
+    const { createClient } = await import('@/lib/supabase/client')
+    const supabase = createClient()
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token || null
+  }, [])
+
+  const handleDownloadInjection = React.useCallback(async () => {
+	    if (isDownloadingInjection) return
+
+    setIsDownloadingInjection(true)
+    try {
+      const response = await fetch(`/api/download/injection/${encodeURIComponent(id)}`, {
+	        method: "GET",
+	        headers: {
+	          Accept: "application/octet-stream",
+	        },
+	      })
+
+	      if (!response.ok) {
+	        const data = await response.json().catch(() => null)
+	        const msg = data?.error || data?.message || `Failed to download (HTTP ${response.status})`
+	        throw new Error(msg)
+	      }
+
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = `${id}.csv`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        toast.success("Download started")
+    } catch (error) {
+      console.error("[Download] Injection download failed:", error)
+      const msg = error instanceof Error ? error.message : "Please Try Again"
+      toast.error(msg)
+    } finally {
+      setIsDownloadingInjection(false)
+    }
+  }, [id, isDownloadingInjection])
+
+  const handleUploadDump = React.useCallback(async () => {
+    if (dumpUploadState === "uploading") return
+
+    try {
+      const token = await getAccessToken()
+      if (!token || token.length < 20) {
+        toast.error("Please login again")
+        return
+      }
+
+      setDumpUploadState("uploading")
+      setDumpUploadRequestId(null)
+      activeDumpRequestIdRef.current = null
+
+      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || "http://localhost:8080"
+      const response = await fetch(`${externalApiDomain}/download/dump/${id}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      })
+
+      const data = (await response.json().catch(() => null)) as DumpUploadStartResponse | null
+      const requestId = data?.request_id || null
+
+      if (response.status !== 202 || !requestId) {
+        const msg = data?.error || data?.message || `Failed to start dump upload (HTTP ${response.status})`
+        throw new Error(msg)
+      }
+
+      activeDumpRequestIdRef.current = requestId
+      setDumpUploadRequestId(requestId)
+      toast.success("Dump upload started")
+      console.log("[Dump] 🚀 upload started:", {
+        requestId,
+        uploadObjectPath: data?.upload_object_path,
+      })
+    } catch (error) {
+      setDumpUploadState("failed")
+      activeDumpRequestIdRef.current = null
+      const msg = error instanceof Error ? error.message : "Failed to start dump upload"
+      console.error("[Dump] ❌ start failed:", error)
+      toast.error(msg)
+    }
+  }, [dumpUploadState, getAccessToken, id])
+
+  const fetchRealtimeSnapshot = React.useCallback(async () => {
+    try {
+      const token = await getAccessToken()
+      if (!token) {
+        console.error('[Snapshot] ❌ No access token available')
+        return
+      }
+
+      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+      const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+      snapshotUrl.searchParams.set("include_items", "1")
+      snapshotUrl.searchParams.set("limit", String(INJECTION_PREFETCH_LIMIT))
+
+      const response = await fetch(snapshotUrl.toString(), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        console.error('[Snapshot] ❌ HTTP error:', response.status)
+        return
+      }
+
+      const data = (await response.json()) as SnapshotResponse
+      console.log('[Snapshot] ✅ Received snapshot:', {
+        status: data.status,
+        hasStats: !!data.stats,
+        itemCount: data.injection_items?.length || 0,
+        lastEventId: data.last_event_id,
+        hasMore: data.has_more,
+        nextCursor: data.next_cursor,
+      })
+
+      if (data.stats) applyStatsPayload(data.stats)
+      if (data.last_event_id) lastEventIdRef.current = data.last_event_id
+
+      // Store cursor for later paging (scroll to load more).
+      const nextCursor = typeof data.next_cursor === "string" && data.next_cursor.trim().length > 0 ? data.next_cursor : null
+      const hasMore = !!data.has_more && !!nextCursor
+      setInjectionNextCursor(nextCursor)
+      setInjectionHasMore(hasMore)
+      injectionCursorRef.current = nextCursor
+      injectionHasMoreRef.current = hasMore
+
+      const mergedItems: NonNullable<SnapshotResponse["injection_items"]> = Array.isArray(data.injection_items)
+        ? data.injection_items
+        : []
+
+      if (mergedItems.length > 0) {
+        const normalized = mergedItems
+          .filter((item) => item.domain && item.domain.trim().length > 0)
+          .map((item) => ({
+            domain: (item.domain || "-").trim(),
+            country: (item.country || "-").trim() || "-",
+            category: (item.category || "-").trim() || "-",
+            createdAt: item.created_at || "",
+            waf: false,
+          }))
+          .slice(0, INJECTION_WINDOW_LIMIT)
+          .map((item, idx) => ({
+            key: `${item.domain}-${item.createdAt || "snapshot"}-${idx}`,
+            domain: item.domain,
+            country: item.country,
+            category: item.category,
+            waf: item.waf,
+          }))
+
+        setSseInjectionRows(normalized)
+        queueResultsCacheSave(normalized)
+      }
+    } catch (error) {
+      console.error('[Snapshot] ❌ Failed to fetch snapshot:', error)
+    } finally {
+      // Snapshot attempt finished (even if empty/error). Stop showing "waiting" skeletons forever.
+      setInjectionHydrated(true)
+    }
+  }, [INJECTION_PREFETCH_LIMIT, INJECTION_WINDOW_LIMIT, applyStatsPayload, getAccessToken, id, queueResultsCacheSave])
+
+  const loadMoreInjectionFromSnapshot = React.useCallback(async () => {
+    if (isLoadingInjectionMore) return
+    if (!injectionHasMoreRef.current) return
+    const cursor = injectionCursorRef.current
+    if (!cursor) return
+
+    setIsLoadingInjectionMore(true)
+    try {
+      console.log("[Snapshot] 📥 loadMore start:", {
+        taskId: id,
+        cursor,
+        currentRows: sseInjectionRows.length,
+        hasMore: injectionHasMoreRef.current,
+      })
+
+      const token = await getAccessToken()
+      if (!token) return
+
+      const externalApiDomain = process.env.NEXT_PUBLIC_EXTERNAL_API_DOMAIN || 'http://localhost:8080'
+      const snapshotUrl = new URL(`${externalApiDomain}/task/${id}/snapshot`)
+      snapshotUrl.searchParams.set("include_items", "1")
+      snapshotUrl.searchParams.set("limit", "100")
+      snapshotUrl.searchParams.set("cursor", cursor)
+
+      console.log("[Snapshot] ➡️ loadMore injection_items:", snapshotUrl.toString())
+      const response = await fetch(snapshotUrl.toString(), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      })
+
+      console.log("[Snapshot] ⬅️ loadMore response:", response.status)
+      if (!response.ok) return
+
+      const data = (await response.json()) as SnapshotResponse
+      const nextCursor = typeof data.next_cursor === "string" && data.next_cursor.trim().length > 0 ? data.next_cursor : null
+      const hasMore = !!data.has_more && !!nextCursor && nextCursor !== cursor
+      setInjectionNextCursor(nextCursor)
+      setInjectionHasMore(hasMore)
+      injectionCursorRef.current = nextCursor
+      injectionHasMoreRef.current = hasMore
+
+      const items = Array.isArray(data.injection_items) ? data.injection_items : []
+      console.log("[Snapshot] ✅ loadMore payload:", {
+        itemCount: items.length,
+        hasMore,
+        nextCursor,
+        sampleDomains: items.slice(0, 3).map((it) => it.domain),
+      })
+
+      if (items.length === 0) return
+
+      const incoming = items
+        .filter((item) => item.domain && item.domain.trim().length > 0)
+        .map((item, idx) => ({
+          key: `snap-${cursor}-${idx}-${item.domain}`,
+          domain: (item.domain || "-").trim(),
+          country: (item.country || "-").trim() || "-",
+          category: (item.category || "-").trim() || "-",
+          waf: false,
+        }))
+
+      setSseInjectionRows((prev) => {
+        // Append older snapshot items to the end, keeping uniqueness by domain|country|category.
+        const indexBySig = new Map<string, number>()
+        const next: typeof prev = []
+
+        for (const row of prev) {
+          const sig = `${row.domain}|${row.country}|${row.category}`
+          const existingIndex = indexBySig.get(sig)
+          if (existingIndex !== undefined) {
+            if (row.waf) next[existingIndex] = { ...next[existingIndex], waf: true }
+            continue
+          }
+          indexBySig.set(sig, next.length)
+          next.push(row)
+          if (next.length >= INJECTION_WINDOW_LIMIT) return next
+        }
+
+        for (const row of incoming) {
+          const sig = `${row.domain}|${row.country}|${row.category}`
+          const existingIndex = indexBySig.get(sig)
+          if (existingIndex !== undefined) {
+            if (row.waf) next[existingIndex] = { ...next[existingIndex], waf: true }
+            continue
+          }
+          indexBySig.set(sig, next.length)
+          next.push(row)
+          if (next.length >= INJECTION_WINDOW_LIMIT) break
+        }
+
+        queueResultsCacheSave(next)
+        return next
+      })
+    } catch (e) {
+      console.error("[Snapshot] ❌ loadMore failed:", e)
+    } finally {
+      setIsLoadingInjectionMore(false)
+    }
+  }, [INJECTION_WINDOW_LIMIT, getAccessToken, id, isLoadingInjectionMore, queueResultsCacheSave, sseInjectionRows.length])
+
+  React.useEffect(() => {
+    if (!injectionHydrated) return
+    console.log("[State] injectionRows updated:", {
+      taskId: id,
+      rows: sseInjectionRows.length,
+      hasMore: injectionHasMoreRef.current,
+      nextCursor: injectionCursorRef.current,
+    })
+  }, [id, injectionHydrated, sseInjectionRows.length])
+
+  // Background prefetch: when SSE isn't pushing items fast enough, keep paging snapshot until we have a reasonable local window.
+  React.useEffect(() => {
+    if (!injectionHydrated) return
+    if (!injectionHasMore) return
+    if (isLoadingInjectionMore) return
+    if (sseInjectionRows.length === 0) return
+    if (sseInjectionRows.length >= INJECTION_SNAPSHOT_PREFETCH_MAX) return
+    if (taskStatus !== "running" && taskStatus !== "running_recon") return
+
+    const timer = window.setTimeout(() => {
+      void loadMoreInjectionFromSnapshot()
+    }, 500)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    INJECTION_SNAPSHOT_PREFETCH_MAX,
+    injectionHasMore,
+    injectionHydrated,
+    isLoadingInjectionMore,
+    loadMoreInjectionFromSnapshot,
+    sseInjectionRows.length,
+    taskStatus,
+  ])
+
   const handleSaveSettings = async () => {
     setIsSaving(true)
     try {
@@ -1398,6 +2486,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       
       toast.success("Task deleted successfully")
       setShowDeleteDialog(false)
+      clearCachedStats()
+      clearCachedTaskInfo()
+      clearStreamStatsCache()
+      void clearResultsCache()
       
       // 重定向到任务列表页面
       window.location.href = '/tasks'
@@ -1416,56 +2508,119 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   })
 
   const progressPercent = progress?.target > 0 ? Math.round((progress.current / progress.target) * 100) : 0
-  const hasTableData = totalItems > 0
-  const websitesPerMinute = 0
-  const requestsPerMinute = 0
-  const trendWebsite: number[] = []
-  const trendRequest: number[] = []
-  const injectionRows = React.useMemo(() => {
-    if (hasTableData) {
-      return tableData.map((row) => ({
-        key: row.id,
-        domain: row.domain || "-",
-        country: row.country || "-",
-        category: row.type && row.type !== "-" ? row.type : "-",
-      }))
-    }
-    return []
-  }, [hasTableData, tableData])
-  const dumpRows = React.useMemo(() => {
-    if (hasTableData) {
-      return tableData.map((row) => ({
-        key: row.id,
-        domain: row.domain || "-",
-        rows: row.rows > 0 ? row.rows : 0,
-        status: row.status,
-      }))
-    }
-    return []
-  }, [hasTableData, tableData])
-  const wafDetected = React.useMemo(
-    () => dumpRows.filter((item) => item.status === "failed").length,
-    [dumpRows]
+  const websitesPerMinute = sseWpm
+  const requestsPerMinute = sseRps
+  const trendWebsite = sseWpmHistory
+  const trendRequest = sseRpsHistory
+  const fallbackTrend = React.useMemo(() => Array.from({ length: 16 }, () => 0), [])
+  const websiteTrendSeries = trendWebsite.length > 0 ? trendWebsite : fallbackTrend
+  const requestTrendSeries = trendRequest.length > 0 ? trendRequest : fallbackTrend
+  const websiteLineChartConfig = React.useMemo(
+    () =>
+      ({
+        websites: {
+          label: "Websites",
+          color: "#3b82f6",
+        },
+      }) satisfies ChartConfig,
+    []
   )
+  const requestLineChartConfig = React.useMemo(
+    () =>
+      ({
+        requests: {
+          label: "Requests",
+          color: "#10b981",
+        },
+      }) satisfies ChartConfig,
+    []
+  )
+  const websiteLineData = React.useMemo(
+    () => websiteTrendSeries.map((value, idx) => ({ point: `${idx + 1}`, websites: value })),
+    [websiteTrendSeries]
+  )
+  const requestLineData = React.useMemo(
+    () => requestTrendSeries.map((value, idx) => ({ point: `${idx + 1}`, requests: value })),
+    [requestTrendSeries]
+  )
+	  const injectionRows = React.useMemo(() => {
+	    if (sseInjectionRows.length > 0) {
+	      return sseInjectionRows
+	    }
+	    return tableData.map((row) => ({
+	      key: row.id,
+	      domain: row.domain || "-",
+	      country: row.country || "-",
+	      category: row.type && row.type !== "-" ? row.type : "-",
+	      waf: false,
+	    }))
+	  }, [sseInjectionRows, tableData])
+	  const dumpRows = React.useMemo(() => {
+      if (sseDumpRows.length > 0) return sseDumpRows
+	    return tableData.map((row) => ({
+	      key: row.id,
+	      domain: row.domain || "-",
+	      country: row.country || "-",
+	      category: row.type && row.type !== "-" ? row.type : "-",
+	      rows: row.rows > 0 ? row.rows : 0,
+	      statusKind: row.status === "complete" ? ("dumped" as const) : ("progress" as const),
+	      statusLabel: row.status === "complete" ? "Dumped" : statusConfig[row.status].label,
+	      percentDone: row.status === "complete" ? 100 : 0,
+	    }))
+	  }, [sseDumpRows, tableData])
+  const wafDetected = sseWafDetected
+	  const categoryColorMap = React.useMemo(
+	    () => ({
+	      Shopping: "#3b82f6",
+	      Gaming: "#8b5cf6",
+	      Education: "#10b981",
+	      Finance: "#0ea5e9",
+	      SocialMedia: "#ec4899",
+	      Streaming: "#14b8a6",
+	      Blogs: "#f59e0b",
+	      Forums: "#a855f7",
+	      Gambling: "#f97316",
+	      Adult: "#ef4444",
+	      Services: "#06b6d4",
+	      Failed: "#ef4444",
+	    }),
+	    []
+	  )
   const categoryStats = React.useMemo(() => {
-    const complete = dumpRows.filter((item) => item.status === "complete").length
-    const dumping = dumpRows.filter((item) => item.status === "dumping").length
-    const queue = dumpRows.filter((item) => item.status === "queue").length
-    const failed = dumpRows.filter((item) => item.status === "failed").length
-    return [
-      { key: "complete", label: "Complete", value: complete, color: "#10b981" },
-      { key: "dumping", label: "Dumping", value: dumping, color: "#3b82f6" },
-      { key: "queue", label: "Queue", value: queue, color: "#f59e0b" },
-      { key: "failed", label: "Failed", value: failed, color: "#ef4444" },
-    ]
-  }, [dumpRows])
-  const categoryTotal = categoryStats.reduce((acc, item) => acc + item.value, 0)
-  const hasInjectionRows = injectionRows.length > 0
-  const hasDumpRows = dumpRows.length > 0
+    const items = Object.entries(sseCategory)
+      .filter(([, value]) => Number.isFinite(value) && value >= 0)
+      .map(([label, value], index) => ({
+        key: sanitizeChartKey(label),
+        label,
+        value: Number(value),
+        color: categoryColorMap[label as keyof typeof categoryColorMap] || "#94a3b8",
+      }))
+    if (items.length > 0) return items
+    return [{ key: "no_data", label: "No data", value: 100, color: "#374151" }]
+  }, [categoryColorMap, sseCategory])
+	  const categoryChartConfig = React.useMemo(() => {
+	    return categoryStats.reduce((acc, item) => {
+	      acc[item.key] = { label: item.label, color: item.color }
+	      return acc
+	    }, {} as ChartConfig)
+	  }, [categoryStats])
+	  const categoryTotal = categoryStats.reduce((acc, item) => acc + item.value, 0)
+	  const dumpCountFromRows = dumpRows.length
+	  const dumpedCountFromRows = dumpRows.filter((row) => row.statusKind === "dumped").length
+    const dumpCountDisplay = Math.max(sseDumpCount, dumpCountFromRows)
+    const dumpedCountDisplay = Math.max(sseDumpedCount, dumpedCountFromRows)
+	  const etaSecondsForDisplay = etaCountdownSeconds !== null && etaCountdownSeconds > 0 ? etaCountdownSeconds : sseEtaSeconds
+	  const etaLabel = etaSecondsForDisplay > 0 ? formatEta(etaSecondsForDisplay) : (progressPercent >= 100 ? "00m 00s" : `${Math.max(1, Math.round((100 - progressPercent) * 0.9))}m`)
+	  const hasInjectionRows = injectionRows.length > 0
+	  const hasDumpRows = dumpRows.length > 0
+	  const showStatsSkeleton = !statsHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
+	  const showInjectionSkeleton = !injectionHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
+	  const showDumpsSkeleton = !dumpsHydrated && (isLoadingData || taskStatus === "running" || taskStatus === "running_recon")
+	  const skeletonRowKeys = React.useMemo(() => Array.from({ length: 5 }, (_, idx) => `sk-${idx}`), [])
 
-  if (isCheckingTask) {
-    return (
-      <div className="flex flex-1 items-center justify-center py-16">
+	  if (isCheckingTask) {
+	    return (
+	      <div className="flex flex-1 items-center justify-center py-16">
         <div className="flex flex-col items-center gap-3">
           <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
           <span className="text-muted-foreground">Loading</span>
@@ -1490,11 +2645,11 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   return (
     <>
-      <div className="flex flex-1 min-h-0 min-w-0 flex-col p-6 font-[family-name:var(--font-inter)]">
-        <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden p-6 font-[family-name:var(--font-inter)]">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="flex flex-col gap-4 pb-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Link href="/tasks">
                   <Button variant="ghost" size="icon" className="size-8">
                     <IconArrowLeft className="size-4" />
@@ -1537,6 +2692,16 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                     <span className="text-foreground">Complete</span>
                   </Badge>
                 )}
+
+                <Badge variant="outline" className="bg-transparent text-xs text-muted-foreground">
+                  <IconCoins size={12} className="text-muted-foreground" />
+                  <span>Credits used</span>
+                  {isLoadingData && currentPage === 1 ? (
+                    <Skeleton className="h-3 w-10" />
+                  ) : (
+                    <span className="font-mono text-foreground">{creditsUsed.toLocaleString()}</span>
+                  )}
+                </Badge>
               </div>
             </div>
 
@@ -1556,11 +2721,13 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
               >
                 {isStarting ? <IconLoader2 size={14} className="animate-spin" /> : <IconPlayerPlay size={14} />}
               </Button>
-              <Button variant="outline" size="icon" className="size-8" onClick={() => setShowSettings(true)}>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-8"
+                onClick={() => setShowSettings(true)}
+              >
                 <IconSettings size={14} />
-              </Button>
-              <Button variant="outline" size="icon" className="size-8">
-                <IconDownload size={14} />
               </Button>
               <Button
                 variant="outline"
@@ -1574,178 +2741,310 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             </div>
           </div>
 
-          <div className="grid min-h-0 flex-1 border-y lg:grid-cols-[2fr_1fr]">
+          <div className="grid min-h-0 flex-1 overflow-auto border-y lg:grid-cols-[2fr_1fr] lg:overflow-hidden">
               <div className="flex min-h-0 flex-col lg:border-r">
                 <div className="grid border-b sm:grid-cols-2 sm:divide-x">
-                  <div className="space-y-3 p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-medium">Websites per minute</p>
-                        <p className="text-sm text-muted-foreground">Avg processed / min</p>
-                      </div>
-                      <p className="text-4xl font-semibold tracking-tight">{formatCompact(websitesPerMinute)}</p>
-                    </div>
-                    <svg viewBox="0 0 320 86" className="h-24 w-full">
-                      {trendWebsite.length > 0 && (
-                        <polyline
-                          points={buildTrendPath(trendWebsite, 320, 86)}
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          className="text-blue-500"
-                        />
-                      )}
-                    </svg>
-                  </div>
-                  <div className="space-y-3 p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-medium">Requests per minute</p>
-                        <p className="text-sm text-muted-foreground">Avg handled / min</p>
-                      </div>
-                      <p className="text-4xl font-semibold tracking-tight">{formatCompact(requestsPerMinute)}</p>
-                    </div>
-                    <svg viewBox="0 0 320 86" className="h-24 w-full">
-                      {trendRequest.length > 0 && (
-                        <polyline
-                          points={buildTrendPath(trendRequest, 320, 86)}
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          className="text-emerald-500"
-                        />
-                      )}
-                    </svg>
-                  </div>
-                </div>
+	                  <div className="space-y-3 p-5">
+	                    <div className="flex items-start justify-between gap-4">
+	                      <div>
+	                        <p className="text-sm font-medium">Websites per minute</p>
+	                        <p className="text-sm text-muted-foreground">Avg processed / min</p>
+	                      </div>
+	                      {showStatsSkeleton ? (
+	                        <Skeleton className="h-9 w-20" />
+	                      ) : (
+	                        <p className="text-3xl font-semibold tracking-tight">{formatCompact(Math.round(websitesPerMinute))}</p>
+	                      )}
+	                    </div>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="h-24 w-full" />
+	                    ) : (
+	                      <ChartContainer config={websiteLineChartConfig} className="h-24 w-full">
+	                        <LineChart
+	                          accessibilityLayer
+	                          data={websiteLineData}
+	                          margin={{ left: 4, right: 4, top: 10, bottom: 6 }}
+	                        >
+	                          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+	                          <XAxis dataKey="point" tickLine={false} axisLine={false} hide />
+	                          <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel />} />
+	                          <Line
+	                            dataKey="websites"
+	                            type="natural"
+	                            stroke="var(--color-websites)"
+	                            strokeWidth={2}
+	                            dot={false}
+	                          />
+	                        </LineChart>
+	                      </ChartContainer>
+	                    )}
+	                  </div>
+	                  <div className="space-y-3 p-5">
+	                    <div className="flex items-start justify-between gap-4">
+	                      <div>
+	                        <p className="text-sm font-medium">Requests per minute</p>
+	                        <p className="text-sm text-muted-foreground">Avg handled / min</p>
+	                      </div>
+	                      {showStatsSkeleton ? (
+	                        <Skeleton className="h-9 w-20" />
+	                      ) : (
+	                        <p className="text-3xl font-semibold tracking-tight">{formatCompact(Math.round(requestsPerMinute))}</p>
+	                      )}
+	                    </div>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="h-24 w-full" />
+	                    ) : (
+	                      <ChartContainer config={requestLineChartConfig} className="h-24 w-full">
+	                        <LineChart
+	                          accessibilityLayer
+	                          data={requestLineData}
+	                          margin={{ left: 4, right: 4, top: 10, bottom: 6 }}
+	                        >
+	                          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+	                          <XAxis dataKey="point" tickLine={false} axisLine={false} hide />
+	                          <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel />} />
+	                          <Line
+	                            dataKey="requests"
+	                            type="natural"
+	                            stroke="var(--color-requests)"
+	                            strokeWidth={2}
+	                            dot={false}
+	                          />
+	                        </LineChart>
+	                      </ChartContainer>
+	                    )}
+	                  </div>
+	                </div>
+	
+	                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
+	                  <div className="space-y-2 p-5">
+	                    <p className="text-sm font-medium">Injected</p>
+	                    <p className="text-sm text-muted-foreground">Injected links</p>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="mt-4 h-10 w-28" />
+	                    ) : (
+	                      <p className="pt-4 text-4xl font-semibold tracking-tight">{sseSuccess.toLocaleString()}</p>
+	                    )}
+	                  </div>
+	                  <div className="space-y-2 p-5">
+	                    <p className="text-sm font-medium">Dumped</p>
+	                    <p className="text-sm text-muted-foreground">Dumped databases</p>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="mt-4 h-10 w-28" />
+	                    ) : (
+	                      <p className="pt-4 text-4xl font-semibold tracking-tight">
+	                        {dumpedCountDisplay.toLocaleString()}
+	                      </p>
+	                    )}
+	                  </div>
+	                </div>
+	
+	                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
+	                  <div className="space-y-2 p-5">
+	                    <p className="text-sm font-medium">WAF</p>
+	                    <p className="text-sm text-muted-foreground">WAF Detected</p>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="mt-4 h-10 w-28" />
+	                    ) : (
+	                      <p className="pt-4 text-4xl font-semibold tracking-tight">{wafDetected.toLocaleString()}</p>
+	                    )}
+	                  </div>
+	                  <div className="space-y-3 p-5">
+	                    <p className="text-sm font-medium">Category</p>
+	                    <div className="flex items-center gap-5">
+	                      {showStatsSkeleton ? (
+	                        <>
+	                          <Skeleton className="h-24 w-24 shrink-0 rounded-full" />
+	                          <div className="space-y-2">
+	                            {skeletonRowKeys.slice(0, 4).map((key) => (
+	                              <div key={key} className="flex items-center gap-2">
+	                                <Skeleton className="h-2 w-2 rounded-full" />
+	                                <Skeleton className="h-3 w-24" />
+	                                <Skeleton className="h-3 w-14" />
+	                              </div>
+	                            ))}
+	                          </div>
+	                        </>
+	                      ) : (
+	                        <>
+	                          <ChartContainer
+	                            config={categoryChartConfig}
+	                            className="h-24 w-24 shrink-0 !aspect-square"
+	                          >
+	                            <PieChart>
+	                              <ChartTooltip
+	                                cursor={false}
+	                                content={<ChartTooltipContent hideLabel nameKey="key" />}
+	                              />
+	                              <Pie
+	                                data={categoryStats}
+	                                dataKey="value"
+	                                nameKey="label"
+	                                innerRadius={24}
+	                                outerRadius={44}
+	                                strokeWidth={1}
+	                              >
+	                                {categoryStats.map((item) => (
+	                                  <Cell key={item.key} fill={`var(--color-${item.key})`} />
+	                                ))}
+	                              </Pie>
+	                            </PieChart>
+	                          </ChartContainer>
+	                          <div className="space-y-2">
+	                            {categoryStats.map((item) => (
+	                              <div key={item.key} className="flex items-center gap-2 text-xs text-muted-foreground">
+	                                <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
+	                                <span>{item.label}</span>
+	                                <span className="font-mono">
+	                                  {Math.trunc(item.value)}
+	                                  {categoryTotal > 0 ? ` (${Math.round((item.value / categoryTotal) * 100)}%)` : ""}
+	                                </span>
+	                              </div>
+	                            ))}
+	                          </div>
+	                        </>
+	                      )}
+	                    </div>
+	                  </div>
+	                </div>
+	
+	                <div className="my-auto space-y-3 p-5">
+	                  <div className="flex items-center justify-between text-sm">
+	                    <p className="font-medium">Progress</p>
+	                    {showStatsSkeleton ? (
+	                      <Skeleton className="h-4 w-40" />
+	                    ) : (
+	                      <p className="font-mono text-muted-foreground">
+	                        {(progress?.current ?? 0).toLocaleString()} / {(progress?.target ?? 0).toLocaleString()}
+	                      </p>
+	                    )}
+	                  </div>
+	                  {showStatsSkeleton ? (
+	                    <Skeleton className="mt-2 h-2 w-full" />
+	                  ) : (
+	                    <Progress value={progressPercent} className="mt-2 h-2" />
+	                  )}
+	                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+	                    {showStatsSkeleton ? (
+	                      <>
+	                        <Skeleton className="h-3 w-10" />
+	                        <Skeleton className="h-3 w-20" />
+	                      </>
+	                    ) : (
+	                      <>
+	                        <span>{progressPercent}%</span>
+	                        <span>ETA: {etaLabel}</span>
+	                      </>
+	                    )}
+	                  </div>
+	                </div>
+	              </div>
 
-                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
-                  <div className="space-y-2 p-5">
-                    <p className="text-sm font-medium">Injected</p>
-                    <p className="text-sm text-muted-foreground">Injected links</p>
-                    <p className="pt-4 text-5xl font-semibold tracking-tight">{(progress?.current ?? 0).toLocaleString()}</p>
-                  </div>
-                  <div className="space-y-2 p-5">
-                    <p className="text-sm font-medium">Dumped</p>
-                    <p className="text-sm text-muted-foreground">Dumped databases</p>
-                    <p className="pt-4 text-5xl font-semibold tracking-tight">
-                      {dumpRows.filter((row) => row.status === "complete").length.toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid border-b sm:grid-cols-2 sm:divide-x">
-                  <div className="space-y-2 p-5">
-                    <p className="text-sm font-medium">WAFDetected</p>
-                    <p className="text-sm text-muted-foreground">WAF-triggered fails</p>
-                    <p className="pt-4 text-5xl font-semibold tracking-tight">{wafDetected.toLocaleString()}</p>
-                  </div>
-                  <div className="space-y-3 p-5">
-                    <p className="text-sm font-medium">Category</p>
-                    <div className="flex items-center gap-5">
-                      <ChartContainer
-                        config={categoryChartConfig}
-                        className="h-24 w-24 shrink-0 !aspect-square"
-                      >
-                        <PieChart>
-                          <ChartTooltip
-                            cursor={false}
-                            content={<ChartTooltipContent hideLabel nameKey="key" />}
-                          />
-                          <Pie
-                            data={categoryStats}
-                            dataKey="value"
-                            nameKey="label"
-                            innerRadius={24}
-                            outerRadius={44}
-                            strokeWidth={1}
-                          >
-                            {categoryStats.map((item) => (
-                              <Cell key={item.key} fill={`var(--color-${item.key})`} />
-                            ))}
-                          </Pie>
-                        </PieChart>
-                      </ChartContainer>
-                      <div className="space-y-2">
-                        {categoryStats.map((item) => (
-                          <div key={item.key} className="flex items-center gap-2 text-xs text-muted-foreground">
-                            <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
-                            <span>{item.label}</span>
-                            <span className="font-mono">
-                              {item.value}
-                              {categoryTotal > 0 ? ` (${Math.round((item.value / categoryTotal) * 100)}%)` : ""}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3 p-5">
-                  <div className="flex items-center justify-between text-sm">
-                    <p className="font-medium">Progress</p>
-                    <p className="font-mono text-muted-foreground">
-                      {(progress?.current ?? 0).toLocaleString()} / {(progress?.target ?? 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <Progress value={progressPercent} className="h-2" />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{progressPercent}%</span>
-                    <span>ETA: {progressPercent >= 100 ? "00m 00s" : `${Math.max(1, Math.round((100 - progressPercent) * 0.9))}m`}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid min-h-0 grid-rows-[1fr_1fr] divide-y">
+              <div className="grid min-h-0 h-[clamp(360px,60vh,720px)] grid-rows-2 divide-y lg:h-full">
                 <section className="flex min-h-0 flex-col">
                   <div className="border-b px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2">
-                          <IconAdjustments className="size-4 text-muted-foreground" />
-                          <p className="text-base font-semibold tracking-tight">Injection</p>
-                          <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
-                            {injectionRows.length}
-                          </Badge>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1">
+	                          <IconAdjustments className="size-4 text-muted-foreground" />
+		                          <p className="text-base font-semibold tracking-tight">Injection</p>
+		                          <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
+		                            {sseSuccess.toLocaleString()}
+		                          </Badge>
+		                          <span className="text-[10px] font-mono text-muted-foreground">
+		                            {sseUiStatus === "connected"
+		                              ? "Live"
+		                              : sseUiStatus === "connecting"
+		                                ? "Connecting…"
+	                                : sseUiStatus === "error"
+	                                  ? "Offline"
+	                                  : "Idle"}
+	                          </span>
+	                        </div>
+	                      </div>
+	                      <div className="flex items-center gap-1">
                         <Button variant="ghost" size="icon" className="size-7">
                           <IconArrowsSort size={14} />
                         </Button>
-                        <Button variant="ghost" size="icon" className="size-7">
-                          <IconDownload size={14} />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7"
+                          onClick={handleDownloadInjection}
+                          disabled={isDownloadingInjection}
+                        >
+                          {isDownloadingInjection ? <IconLoader2 size={14} className="animate-spin" /> : <IconDownload size={14} />}
                         </Button>
                       </div>
                     </div>
                   </div>
-                  <div
-                    className={
-                      hasInjectionRows
-                        ? "dashboard-scroll h-[180px] overflow-auto"
-                        : "overflow-hidden"
-                    }
-                  >
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-transparent hover:bg-transparent">
-                          <TableHead>Domains</TableHead>
+	                  <div
+	                    className={
+	                      hasInjectionRows || showInjectionSkeleton
+	                        ? "dashboard-scroll min-h-0 flex-1 overflow-auto"
+	                        : "min-h-0 flex-1 overflow-hidden"
+	                    }
+	                    onScroll={(e) => {
+	                      if (showInjectionSkeleton) return
+	                      if (isLoadingInjectionMore) return
+	                      if (!injectionHasMore) return
+	                      const el = e.currentTarget
+	                      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+	                      if (distanceToBottom < 80) {
+	                        void loadMoreInjectionFromSnapshot()
+	                      }
+	                    }}
+	                  >
+	                    <Table>
+	                      <TableHeader>
+	                        <TableRow className="bg-transparent hover:bg-transparent">
+	                          <TableHead>Domains</TableHead>
                           <TableHead>Country</TableHead>
                           <TableHead>Category</TableHead>
                           <TableHead className="w-[40px]" />
                         </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {hasInjectionRows ? (
-                          injectionRows.map((item) => (
-                            <TableRow key={item.key} className="hover:bg-transparent">
-                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
-                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
-                              <TableCell className="text-muted-foreground">{item.category}</TableCell>
-                              <TableCell>
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
+	                      </TableHeader>
+	                      <TableBody>
+	                        {showInjectionSkeleton ? (
+	                          skeletonRowKeys.map((key) => (
+	                            <TableRow key={key} className="hover:bg-transparent">
+	                              <TableCell className="truncate font-medium">
+	                                <Skeleton className="h-4 w-44" />
+	                              </TableCell>
+	                              <TableCell className="text-muted-foreground">
+	                                <Skeleton className="h-4 w-10" />
+	                              </TableCell>
+	                              <TableCell className="text-muted-foreground">
+	                                <Skeleton className="h-4 w-16" />
+	                              </TableCell>
+	                              <TableCell>
+	                                <Skeleton className="h-6 w-6 rounded-md" />
+	                              </TableCell>
+	                            </TableRow>
+	                          ))
+		                        ) : hasInjectionRows ? (
+		                          injectionRows.map((item) => (
+		                            <TableRow key={item.key} className="hover:bg-transparent">
+		                              <TableCell className="font-medium">
+		                                <div className="flex min-w-0 items-center gap-2">
+	                                  <span className="block min-w-0 max-w-[220px] flex-1 truncate" title={item.domain}>
+	                                    {item.domain}
+	                                  </span>
+	                                  {item.waf ? (
+	                                    <Badge
+	                                      variant="outline"
+	                                      className="ml-auto shrink-0 border-red-200 bg-red-50 px-1.5 py-0 text-[10px] font-mono text-red-700 dark:border-red-500/30 dark:bg-red-950/30 dark:text-red-300"
+	                                    >
+	                                      WAF
+	                                    </Badge>
+	                                  ) : null}
+	                                </div>
+	                              </TableCell>
+	                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
+	                              <TableCell className="text-muted-foreground">{item.category}</TableCell>
+	                              <TableCell>
+	                                <DropdownMenu>
+	                                  <DropdownMenuTrigger asChild>
                                     <Button variant="ghost" size="icon" className="size-7">
                                       <IconDotsVertical size={14} />
                                     </Button>
@@ -1755,13 +3054,44 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                                     <DropdownMenuItem>Copy domain</DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
-                              </TableCell>
-                            </TableRow>
-                          ))
-                        ) : (
-                          <TableRow>
-                            <TableCell colSpan={4} className="h-[120px]">
-                              <div className="flex flex-col items-center justify-center text-center py-4">
+		                              </TableCell>
+		                            </TableRow>
+		                          ))
+		                        ) : null}
+
+		                        {!showInjectionSkeleton && hasInjectionRows ? (
+		                          <TableRow>
+		                            <TableCell colSpan={4} className="py-3">
+		                              <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+		                                {isLoadingInjectionMore ? (
+		                                  <>
+		                                    <IconLoader2 className="size-4 animate-spin" />
+		                                    <span>Loading more…</span>
+		                                  </>
+		                                ) : injectionHasMore ? (
+		                                  <span>Scroll to load more…</span>
+		                                ) : (
+		                                  <span>All history loaded</span>
+		                                )}
+		                                <span className="font-mono">{injectionRows.length.toLocaleString()} shown</span>
+		                              </div>
+		                            </TableCell>
+		                          </TableRow>
+		                        ) : injectionHasMore || isLoadingInjectionMore ? (
+		                          <TableRow>
+		                            <TableCell colSpan={4} className="h-[120px]">
+		                              <div className="flex flex-col items-center justify-center text-center py-4">
+	                                <IconLoader2 className="mb-2 size-5 animate-spin text-muted-foreground" />
+	                                <p className="text-xs text-muted-foreground">
+	                                  {isLoadingInjectionMore ? "Loading more…" : "Waiting for results…"}
+	                                </p>
+	                              </div>
+	                            </TableCell>
+	                          </TableRow>
+	                        ) : (
+	                          <TableRow>
+	                            <TableCell colSpan={4} className="h-[120px]">
+	                              <div className="flex flex-col items-center justify-center text-center py-4">
                                 <div className="mb-2 flex size-14 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25">
                                   <IconWorld className="size-6 text-muted-foreground/60" strokeWidth={1.5} />
                                 </div>
@@ -1769,12 +3099,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                                 <p className="max-w-[220px] text-xs text-muted-foreground">Run task to load records.</p>
                               </div>
                             </TableCell>
-                          </TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </section>
+	                          </TableRow>
+	                        )}
+	                      </TableBody>
+	                    </Table>
+	                  </div>
+	                </section>
 
                 <section className="flex min-h-0 flex-col">
                   <div className="border-b px-4 py-3">
@@ -1784,64 +3114,120 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                           <IconBinaryTree className="size-4 text-muted-foreground" />
                           <p className="text-base font-semibold tracking-tight">Dumps</p>
                           <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
-                            {dumpRows.length}
+                            {dumpCountDisplay}
                           </Badge>
+                          {dumpUploadState === "uploading" ? (
+                            <span className="text-[10px] font-mono text-muted-foreground">Uploading…</span>
+                          ) : dumpUploadState === "failed" ? (
+                            <span className="text-[10px] font-mono text-red-500">Failed</span>
+                          ) : dumpUploadState === "done" ? (
+                            <span className="text-[10px] font-mono text-emerald-500">Done</span>
+                          ) : null}
+                          {dumpUploadRequestId ? (
+                            <span className="text-[10px] font-mono text-muted-foreground/80">
+                              {dumpUploadRequestId.slice(0, 8)}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
-                      <Button variant="ghost" size="icon" className="size-7">
-                        <IconDownload size={14} />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        onClick={handleUploadDump}
+                        disabled={dumpUploadState === "uploading"}
+                        title={dumpUploadState === "failed" ? "Retry upload" : "Upload and download dump"}
+                      >
+                        {dumpUploadState === "uploading" ? (
+                          <IconLoader2 size={14} className="animate-spin" />
+                        ) : (
+                          <IconDownload size={14} />
+                        )}
                       </Button>
                     </div>
                   </div>
-                  <div
-                    className={
-                      hasDumpRows
-                        ? "dashboard-scroll h-[180px] overflow-auto"
-                        : "overflow-hidden"
-                    }
-                  >
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-transparent hover:bg-transparent">
-                          <TableHead>Domains</TableHead>
-                          <TableHead>Rows</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="w-[40px]" />
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {hasDumpRows ? (
-                          dumpRows.map((item) => (
-                            <TableRow key={item.key} className="hover:bg-transparent">
-                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
-                              <TableCell className="font-mono text-muted-foreground">{formatCompact(item.rows)}</TableCell>
-                              <TableCell>
-                                <Badge variant="outline" className="bg-transparent text-xs text-muted-foreground">
-                                  {statusConfig[item.status].label}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="size-7">
-                                      <IconDotsVertical size={14} />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem>View details</DropdownMenuItem>
-                                    <DropdownMenuItem>Retry</DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
+	                  <div
+	                    className={
+	                      hasDumpRows || showDumpsSkeleton
+	                        ? "dashboard-scroll min-h-0 flex-1 overflow-auto"
+	                        : "min-h-0 flex-1 overflow-hidden"
+	                    }
+	                  >
+	                    <Table>
+	                      <TableHeader>
+	                        <TableRow className="bg-transparent hover:bg-transparent">
+	                          <TableHead>Domains</TableHead>
+	                          <TableHead>Country</TableHead>
+	                          <TableHead>Category</TableHead>
+	                          <TableHead>Rows</TableHead>
+	                          <TableHead>Status</TableHead>
+	                        </TableRow>
+	                      </TableHeader>
+	                      <TableBody>
+	                        {showDumpsSkeleton ? (
+	                          skeletonRowKeys.map((key) => (
+	                            <TableRow key={key} className="hover:bg-transparent">
+	                              <TableCell className="truncate font-medium">
+	                                <Skeleton className="h-4 w-44" />
+	                              </TableCell>
+	                              <TableCell className="text-muted-foreground">
+	                                <Skeleton className="h-4 w-10" />
+	                              </TableCell>
+	                              <TableCell>
+	                                <Skeleton className="h-5 w-20 rounded-full" />
+	                              </TableCell>
+	                              <TableCell className="font-mono text-muted-foreground">
+	                                <Skeleton className="h-4 w-12" />
+	                              </TableCell>
+	                              <TableCell>
+	                                <Skeleton className="h-5 w-16 rounded-full" />
+	                              </TableCell>
+	                            </TableRow>
+	                          ))
+	                        ) : hasDumpRows ? (
+	                          dumpRows.map((item) => (
+	                            <TableRow key={item.key} className="hover:bg-transparent">
+	                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
+	                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
+	                              <TableCell>
+	                                <span className="text-muted-foreground">{item.category || "-"}</span>
+	                              </TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+	                                {formatCompact(item.rows)}
+	                              </TableCell>
+	                              <TableCell>
+	                                {item.statusKind === "dumped" ? (
+	                                  <Badge
+	                                    variant="outline"
+	                                    className="gap-1.5 border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+	                                  >
+	                                    <IconCircleCheck size={12} className="text-emerald-600 dark:text-emerald-400" />
+	                                    <span className="font-medium">Dumped</span>
+	                                  </Badge>
+	                                ) : (
+	                                  <div className="flex items-center gap-2">
+	                                    <Badge
+	                                      variant="outline"
+	                                      className="gap-1.5 border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-400"
+	                                    >
+	                                      <IconLoader2
+	                                        size={12}
+	                                        className="animate-spin text-blue-600 dark:text-blue-400"
+	                                      />
+	                                      <span className="font-medium">{item.percentDone}% progress</span>
+	                                    </Badge>
+	                                  </div>
+	                                )}
                               </TableCell>
                             </TableRow>
                           ))
                         ) : (
-                          <TableRow>
-                            <TableCell colSpan={4} className="h-[120px]">
-                              <div className="flex flex-col items-center justify-center text-center py-4">
-                                <div className="mb-2 flex size-14 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25">
-                                  <IconBinaryTree className="size-6 text-muted-foreground/60" strokeWidth={1.5} />
-                                </div>
+	                          <TableRow>
+	                            <TableCell colSpan={5} className="h-[120px]">
+	                              <div className="flex flex-col items-center justify-center text-center py-4">
+	                                <div className="mb-2 flex size-14 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/25">
+	                                  <IconBinaryTree className="size-6 text-muted-foreground/60" strokeWidth={1.5} />
+	                                </div>
                                 <h4 className="mb-0.5 text-sm font-semibold tracking-tight">No dump records</h4>
                                 <p className="max-w-[220px] text-xs text-muted-foreground">Dump results appear here.</p>
                               </div>

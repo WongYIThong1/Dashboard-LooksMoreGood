@@ -3,6 +3,9 @@
 import * as React from "react"
 import {
   IconUser,
+  IconAt,
+  IconCrown,
+  IconCoins,
   IconBell,
   IconShield,
   IconLoader2,
@@ -284,40 +287,52 @@ export function SettingsContent() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
-                <Input 
-                  id="username" 
-                  value={settings?.username || ""} 
-                  disabled 
-                  className="bg-muted" 
-                />
+                <div className="relative">
+                  <IconUser className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="username"
+                    value={settings?.username || ""}
+                    disabled
+                    className="bg-muted pl-9"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input 
-                  id="email" 
-                  type="email" 
-                  value={settings?.email || ""} 
-                  disabled 
-                  className="bg-muted" 
-                />
+                <div className="relative">
+                  <IconAt className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="email"
+                    type="email"
+                    value={settings?.email || ""}
+                    disabled
+                    className="bg-muted pl-9"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="plan">Plan</Label>
-                <Input 
-                  id="plan" 
-                  value={settings?.plan || "Free"} 
-                  disabled 
-                  className="bg-muted capitalize" 
-                />
+                <div className="relative">
+                  <IconCrown className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="plan"
+                    value={settings?.plan || "Free"}
+                    disabled
+                    className="bg-muted pl-9 capitalize"
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="credits">Credits</Label>
-                <Input 
-                  id="credits" 
-                  value={formatCredits(settings?.credits || 0)} 
-                  disabled 
-                  className="bg-muted font-[family-name:var(--font-jetbrains-mono)]" 
-                />
+                <div className="relative">
+                  <IconCoins className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="credits"
+                    value={formatCredits(settings?.credits || 0)}
+                    disabled
+                    className="bg-muted pl-9 font-[family-name:var(--font-jetbrains-mono)]"
+                  />
+                </div>
               </div>
             </div>
           </CardContent>
