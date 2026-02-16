@@ -17,37 +17,30 @@ export default function OpenGraphImage() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background:
-            "radial-gradient(circle at 20% 20%, #202a44 0%, #101218 45%, #07080c 100%)",
+          background: "#000000",
           color: "white",
           fontFamily: "Inter, Arial, sans-serif",
-          position: "relative",
+          flexDirection: "column",
+          gap: 28,
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            top: 40,
-            left: 40,
-            width: 56,
-            height: 56,
-            borderRadius: 12,
-            border: "2px solid rgba(255,255,255,0.8)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 28,
-            fontWeight: 700,
-          }}
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          width="150"
+          height="150"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ opacity: 1 }}
         >
-          S
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 20, textAlign: "center" }}>
-          <div style={{ fontSize: 84, fontWeight: 800, letterSpacing: 1 }}>SQLBots</div>
-          <div style={{ fontSize: 30, opacity: 0.88 }}>
-            Automated SQL security workflow dashboard
-          </div>
-        </div>
+          <path d="M12 8V4H8" />
+          <rect width="16" height="12" x="4" y="8" rx="2" />
+          <path d="M2 14h2m16 0h2m-7-1v2m-6-2v2" />
+        </svg>
+        <div style={{ fontSize: 88, fontWeight: 800, letterSpacing: 2 }}>SQLBots</div>
       </div>
     ),
     size
