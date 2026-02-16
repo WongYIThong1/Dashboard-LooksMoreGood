@@ -4,7 +4,6 @@ import * as React from "react"
 import {
   IconTrophy,
   IconDatabase,
-  IconChartBar,
   IconBell,
   IconCrown,
   IconFlame,
@@ -28,6 +27,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getCachedUserInfo, setCachedUserInfo } from "@/lib/user-cache"
+import { toast } from "sonner"
 
 type DashboardUser = {
   user_name: string
@@ -74,7 +74,7 @@ type DashboardSnapshot = {
   ts: number
 }
 
-const ACTIVITY_LIMIT = 4
+const ACTIVITY_LIMIT = 3
 const ANNOUNCEMENT_LIMIT = 3
 
 const DEFAULT_USER: DashboardUser = {
@@ -184,6 +184,32 @@ function normalizeRecentActivity(input: unknown): RecentActivityItem[] {
         event_id: toText(row.event_id),
       }
     })
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, ACTIVITY_LIMIT)
+}
+
+function mergeRecentActivity(prev: RecentActivityItem[], incoming: unknown): RecentActivityItem[] {
+  if (Array.isArray(incoming)) {
+    return normalizeRecentActivity(incoming)
+  }
+
+  if (!isRecord(incoming)) {
+    return prev.slice(0, ACTIVITY_LIMIT)
+  }
+
+  const next = normalizeRecentActivity([incoming])
+  if (next.length === 0) return prev.slice(0, ACTIVITY_LIMIT)
+
+  const merged = [...next, ...prev]
+  const seen = new Set<string>()
+  return merged
+    .filter((item) => {
+      const key = item.event_id || `${item.taskid}_${item.ts}`
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => b.ts - a.ts)
     .slice(0, ACTIVITY_LIMIT)
 }
 
@@ -229,7 +255,6 @@ function normalizeSnapshot(input: unknown): DashboardSnapshot {
 export function DashboardContent() {
   const [snapshot, setSnapshot] = React.useState<DashboardSnapshot | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
 
   const lastEventIdRef = React.useRef<string>("")
   const sseAbortRef = React.useRef<AbortController | null>(null)
@@ -285,7 +310,6 @@ export function DashboardContent() {
 
     const payload = normalizeSnapshot(await response.json())
     applySnapshot(payload)
-    setError(null)
   }, [applySnapshot, getAccessToken])
 
   const fetchAnnouncements = React.useCallback(async () => {
@@ -340,7 +364,7 @@ export function DashboardContent() {
         return {
           ...prev,
           user: normalizeUser(packet.user ?? prev.user),
-          recent_activity: normalizeRecentActivity(packet.recent_activity ?? prev.recent_activity),
+          recent_activity: mergeRecentActivity(prev.recent_activity, packet.recent_activity ?? packet.recent),
           ts: Date.now(),
         }
       })
@@ -507,7 +531,7 @@ export function DashboardContent() {
       } catch (fetchError) {
         console.error("[Dashboard] initial fetch failed:", fetchError)
         if (!cancelled) {
-          setError("Failed to load dashboard data")
+          toast.error("Failed to connect to dashboard")
         }
       } finally {
         if (!cancelled) {
@@ -532,7 +556,7 @@ export function DashboardContent() {
   const recentActivity = snapshot?.recent_activity ?? []
 
   return (
-    <div className="flex flex-1 flex-col gap-6 p-6 font-[family-name:var(--font-inter)]">
+    <div className="flex flex-1 flex-col gap-4 overflow-y-auto scrollbar-hide p-4 font-[family-name:var(--font-inter)]">
       <div className="flex flex-col gap-2">
         {isLoading ? (
           <>
@@ -543,14 +567,13 @@ export function DashboardContent() {
           <>
             <h1 className="text-2xl font-semibold">Welcome back, {user.user_name}</h1>
             <p className="text-muted-foreground text-sm">{"Here's what's happening with your account today."}</p>
-            {error ? <p className="text-xs text-red-500">{error}</p> : null}
           </>
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <Card className="rounded-xl">
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Rank</p>
@@ -568,7 +591,7 @@ export function DashboardContent() {
         </Card>
 
         <Card className="rounded-xl">
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Injected</p>
@@ -586,7 +609,7 @@ export function DashboardContent() {
         </Card>
 
         <Card className="rounded-xl">
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Dumped</p>
@@ -603,39 +626,11 @@ export function DashboardContent() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-xl">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">Score</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{formatCount(user.score)}</p>
-              </div>
-              <div className="rounded-lg bg-emerald-500/10 p-2">
-                <IconChartBar className="size-5 text-emerald-500" />
-              </div>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">Injected x1 + Dumped x3</p>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-muted-foreground">Plan</p>
-                <p className="text-2xl font-bold font-[family-name:var(--font-jetbrains-mono)]">{user.plan}</p>
-              </div>
-              <div className="rounded-lg bg-orange-500/10 p-2">
-                <IconCrown className="size-5 text-orange-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-5">
-        <Card className="h-[520px] rounded-xl lg:col-span-3">
-          <CardHeader className="pb-3">
+      <div className="grid gap-3 lg:grid-cols-5">
+        <Card className="h-[460px] rounded-xl lg:col-span-3">
+          <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <IconFlame className="size-4 text-orange-500" />
@@ -690,8 +685,8 @@ export function DashboardContent() {
         </Card>
 
         <div className="flex flex-col gap-4 lg:col-span-2">
-          <Card className="h-[220px] rounded-xl">
-            <CardHeader className="pb-3">
+          <Card className="h-[190px] rounded-xl">
+            <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
                 <IconBell className="size-4 text-blue-500" />
                 <CardTitle className="text-base">Announcements</CardTitle>
@@ -713,19 +708,22 @@ export function DashboardContent() {
             </CardContent>
           </Card>
 
-          <Card className="h-[280px] rounded-xl">
-            <CardHeader className="pb-3">
+          <Card className="h-[240px] rounded-xl">
+            <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
                 <IconDatabase className="size-4 text-purple-500" />
                 <CardTitle className="text-base">Recent Activity</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 overflow-auto space-y-3">
+            <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide space-y-3">
               {recentActivity.map((item, index) => (
                 <div key={item.event_id || `${item.taskid}_${index}`} className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">{item.domain}</p>
-                    <p className="truncate text-xs text-muted-foreground">{item.country} | {item.category}</p>
+                  <div className="flex min-w-0 flex-1 gap-3">
+                    <div className="mt-1.5 size-2 shrink-0 rounded-full bg-blue-500" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm">{item.domain}</p>
+                      <p className="truncate text-xs text-muted-foreground">{item.country} | {item.category}</p>
+                    </div>
                   </div>
                   <span className="shrink-0 text-xs font-[family-name:var(--font-jetbrains-mono)] text-muted-foreground">
                     {formatTime(item.ts)}
