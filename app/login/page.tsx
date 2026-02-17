@@ -379,9 +379,9 @@ function LoginForm() {
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground">
           By continuing, you agree to our{" "}
-          <a href="#" className="underline underline-offset-4 hover:text-foreground">Terms</a>
+          <a href="https://www.sqlbots.online/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-foreground">Terms</a>
           {" "}and{" "}
-          <a href="#" className="underline underline-offset-4 hover:text-foreground">Privacy Policy</a>
+          <a href="https://www.sqlbots.online/privacy" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-foreground">Privacy Policy</a>
         </p>
       </div>
     </div>

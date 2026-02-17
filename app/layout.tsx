@@ -43,17 +43,20 @@ const siteUrl = resolveSiteUrl();
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "SQLBots AI Security Platform",
+    default: "SQLBots — AI-Powered SQL Security Testing Platfor",
     template: "%s | SQLBots",
   },
   description:
     "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
   applicationName: "SQLBots",
+  icons: {
+    icon: "/icon.svg",
+  },
   openGraph: {
     type: "website",
     url: "/",
     siteName: "SQLBots",
-    title: "SQLBots AI Security Platform",
+    title: "SQLBots — AI-Powered SQL Security Testing Platfor",
     description:
       "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
     images: [
@@ -67,7 +70,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "SQLBots AI Security Platform",
+    title: "SQLBots — AI-Powered SQL Security Testing Platfor",
     description:
       "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
     images: ["/twitter-image"],
