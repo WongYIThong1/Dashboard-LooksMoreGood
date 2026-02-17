@@ -61,7 +61,7 @@ export const metadata: Metadata = {
       "Automated SQL injection scanning, dumping and validation powered by AI engines.",
     images: [
       {
-        url: "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/renw.png",
+        url: "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/pggrapl%20(1).png",
         width: 1200,
         height: 630,
         alt: "SQLBots",
@@ -74,7 +74,7 @@ export const metadata: Metadata = {
     description:
       "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
     images: [
-      "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/renw.png",
+      "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/pggrapl%20(1).png",
     ],
   },
 };
