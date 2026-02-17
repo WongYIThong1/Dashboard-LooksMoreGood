@@ -58,10 +58,10 @@ export const metadata: Metadata = {
     siteName: "SQLBots",
     title: "SQLBots — AI-Powered SQL Security Testing Platfor",
     description:
-      "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
+      "Automated SQL injection scanning, dumping and validation powered by AI engines.",
     images: [
       {
-        url: "/opengraph-image",
+        url: "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/renw.png",
         width: 1200,
         height: 630,
         alt: "SQLBots",
@@ -73,7 +73,9 @@ export const metadata: Metadata = {
     title: "SQLBots — AI-Powered SQL Security Testing Platfor",
     description:
       "An AI-powered cloud platform that automates SQL scanning, intelligent detection, and workflow management at scale.",
-    images: ["/twitter-image"],
+    images: [
+      "https://ubyttekkpuihhbkogznd.supabase.co/storage/v1/object/public/avatars/renw.png",
+    ],
   },
 };
 
