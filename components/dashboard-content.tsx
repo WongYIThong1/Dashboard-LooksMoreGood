@@ -30,6 +30,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { getCachedUserInfo, setCachedUserInfo } from "@/lib/user-cache"
+import { getCachedDashboardSnapshot, setCachedDashboardSnapshot } from "@/lib/dashboard-cache"
 import { toast } from "sonner"
 
 type DashboardUser = {
@@ -361,6 +362,11 @@ export function DashboardContent() {
     })
   }, [])
 
+  React.useEffect(() => {
+    if (!snapshot) return
+    setCachedDashboardSnapshot(snapshot)
+  }, [snapshot])
+
   const fetchDashboard = React.useCallback(async () => {
     const token = await getAccessToken()
     if (!token) {
@@ -620,11 +626,18 @@ export function DashboardContent() {
 
     const bootstrap = async () => {
       setIsLoading(true)
+      const cached = getCachedDashboardSnapshot()
+      const hasCachedSnapshot = cached !== null
+      if (cached) {
+        applySnapshot(normalizeSnapshot(cached))
+        setIsLoading(false)
+      }
+
       try {
         await fetchDashboard()
       } catch (fetchError) {
         console.error("[Dashboard] initial fetch failed:", fetchError)
-        if (!cancelled) {
+        if (!cancelled && !hasCachedSnapshot) {
           toast.error("Failed to connect to dashboard")
         }
       } finally {
@@ -642,7 +655,7 @@ export function DashboardContent() {
       clearRetryTimer()
       sseAbortRef.current?.abort()
     }
-  }, [fetchDashboard, getAccessToken, handleDashboardEvent])
+  }, [applySnapshot, fetchDashboard, getAccessToken, handleDashboardEvent])
 
   const user = snapshot?.user ?? DEFAULT_USER
   const leaderboard = snapshot?.leaderboard ?? []

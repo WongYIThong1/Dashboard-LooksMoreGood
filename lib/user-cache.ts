@@ -11,7 +11,6 @@ interface CachedUserInfo {
 }
 
 const CACHE_KEY = 'user_info_cache'
-const CACHE_DURATION = 24 * 60 * 60 * 1000 // 24小时
 
 export function getCachedUserInfo(): CachedUserInfo | null {
   try {
@@ -19,13 +18,6 @@ export function getCachedUserInfo(): CachedUserInfo | null {
     if (!cached) return null
 
     const data: CachedUserInfo = JSON.parse(cached)
-    
-    // 检查缓存是否过期
-    const now = Date.now()
-    if (now - data.cachedAt > CACHE_DURATION) {
-      localStorage.removeItem(CACHE_KEY)
-      return null
-    }
 
     return data
   } catch (error) {
