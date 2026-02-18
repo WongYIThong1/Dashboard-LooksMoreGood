@@ -338,6 +338,7 @@ export function DashboardContent() {
   const sseAbortRef = React.useRef<AbortController | null>(null)
   const sseRetryTimerRef = React.useRef<number | null>(null)
   const sseRetryCountRef = React.useRef<number>(0)
+  const cachedUserRef = React.useRef<DashboardUser | null>(null)
 
   const getAccessToken = React.useCallback(async () => {
     const { createClient } = await import("@/lib/supabase/client")
@@ -348,19 +349,27 @@ export function DashboardContent() {
     return session?.access_token || null
   }, [])
 
-  const applySnapshot = React.useCallback((next: DashboardSnapshot) => {
-    setSnapshot(next)
-
+  const cacheUsernameToBrowser = React.useCallback((username: string, plan?: string) => {
     const cached = getCachedUserInfo()
+    const safeUsername = toText(username, DEFAULT_USER.user_name)
     setCachedUserInfo({
       id: cached?.id,
       email: cached?.email || "user@example.com",
-      username: next.user.user_name,
-      plan: next.user.plan,
+      username: safeUsername,
+      plan: plan ?? cached?.plan,
       avatarUrl: cached?.avatarUrl,
       avatarHash: cached?.avatarHash,
     })
   }, [])
+
+  const applySnapshot = React.useCallback((next: DashboardSnapshot) => {
+    setSnapshot(next)
+    cacheUsernameToBrowser(next.user.user_name, next.user.plan)
+  }, [cacheUsernameToBrowser])
+
+  React.useEffect(() => {
+    cachedUserRef.current = snapshot?.user ?? null
+  }, [snapshot])
 
   React.useEffect(() => {
     if (!snapshot) return
@@ -466,15 +475,19 @@ export function DashboardContent() {
     }
 
     if (eventType === "dashboard_update") {
+      const nextUser = normalizeUser(packet.user)
       setSnapshot((prev) => {
         if (!prev) return prev
         return {
           ...prev,
-          user: normalizeUser(packet.user ?? prev.user),
+          user: packet.user === undefined ? prev.user : nextUser,
           recent_activity: mergeRecentActivity(prev.recent_activity, packet.recent_activity ?? packet.recent),
           ts: Date.now(),
         }
       })
+      if (packet.user !== undefined) {
+        cacheUsernameToBrowser(nextUser.user_name, nextUser.plan)
+      }
       return
     }
 
@@ -510,7 +523,7 @@ export function DashboardContent() {
       void fetchAnnouncements()
       return
     }
-  }, [applySnapshot, fetchAnnouncements])
+  }, [applySnapshot, cacheUsernameToBrowser, fetchAnnouncements])
 
   React.useEffect(() => {
     let cancelled = false
@@ -568,6 +581,9 @@ export function DashboardContent() {
         }
 
         sseRetryCountRef.current = 0
+        if (cachedUserRef.current) {
+          cacheUsernameToBrowser(cachedUserRef.current.user_name, cachedUserRef.current.plan)
+        }
 
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
@@ -627,7 +643,6 @@ export function DashboardContent() {
     const bootstrap = async () => {
       setIsLoading(true)
       const cached = getCachedDashboardSnapshot()
-      const hasCachedSnapshot = cached !== null
       if (cached) {
         applySnapshot(normalizeSnapshot(cached))
         setIsLoading(false)
@@ -637,9 +652,6 @@ export function DashboardContent() {
         await fetchDashboard()
       } catch (fetchError) {
         console.error("[Dashboard] initial fetch failed:", fetchError)
-        if (!cancelled && !hasCachedSnapshot) {
-          toast.error("Failed to connect to dashboard")
-        }
       } finally {
         if (!cancelled) {
           setIsLoading(false)
@@ -655,7 +667,7 @@ export function DashboardContent() {
       clearRetryTimer()
       sseAbortRef.current?.abort()
     }
-  }, [applySnapshot, fetchDashboard, getAccessToken, handleDashboardEvent])
+  }, [applySnapshot, cacheUsernameToBrowser, fetchDashboard, getAccessToken, handleDashboardEvent])
 
   const user = snapshot?.user ?? DEFAULT_USER
   const leaderboard = snapshot?.leaderboard ?? []
