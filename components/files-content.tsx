@@ -775,10 +775,18 @@ function formatStorageSize(bytes: number): string {
       })
 
       if (!response.ok) {
+        const errData = await response.json().catch(() => null)
+        const apiMessage =
+          typeof errData?.message === "string"
+            ? errData.message
+            : typeof errData?.error === "string"
+              ? errData.error
+              : null
         throw new Error(
-          getHttpErrorMessage(response.status, "Failed to upload file", {
-            forbiddenMessage: "Upload is blocked by plan or storage quota",
-          })
+          apiMessage ||
+            getHttpErrorMessage(response.status, "Failed to upload file", {
+              forbiddenMessage: "Upload is blocked by plan or storage quota",
+            })
         )
       }
 

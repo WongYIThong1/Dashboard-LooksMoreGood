@@ -5,7 +5,9 @@ import { isIP } from "node:net"
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-const SAFE_FILE_NAME_REGEX = /^[a-zA-Z0-9._ -]+$/
+// Allow common user-facing file names (including unicode letters/numbers and parentheses)
+// while still blocking path separators and traversal via dedicated checks below.
+const SAFE_FILE_NAME_REGEX = /^[\p{L}\p{N}._() -]+$/u
 const PRIVATE_CIDR_REGEXES = [
   /^10\./,
   /^127\./,
