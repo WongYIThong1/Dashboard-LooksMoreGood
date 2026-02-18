@@ -307,12 +307,6 @@ function LoginForm() {
               <div className="flex flex-col gap-2">
                 <div className="flex items-center">
                   <Label htmlFor="password">Password</Label>
-                  <a
-                    href="/forgot-password"
-                    className="ml-auto inline-block text-sm text-muted-foreground underline-offset-4 hover:underline hover:text-foreground"
-                  >
-                    Forgot your password?
-                  </a>
                 </div>
                 <div className="relative">
                   <IconLock className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />

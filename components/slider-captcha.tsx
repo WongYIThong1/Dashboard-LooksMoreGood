@@ -118,7 +118,11 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
       setIsDragging(true)
       setStatus("dragging")
       setMessage("Keep sliding to the end")
-      event.currentTarget.setPointerCapture(event.pointerId)
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch {
+        // Some mobile browsers don't fully support pointer capture on buttons.
+      }
       pointerIdRef.current = event.pointerId
       pointerTypeRef.current = event.pointerType || "mouse"
       if (trackRef.current) {
@@ -130,11 +134,11 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
     [disabled, reset, thumbSize, updatePosition, verified]
   )
 
-  const onPointerMove = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
+  const queueDragMove = React.useCallback(
+    (pointerId: number, clientX: number, clientY: number) => {
       if (!isDragging || disabled || verified) return
-      if (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current) return
-      pendingPointRef.current = { x: event.clientX, y: event.clientY }
+      if (pointerIdRef.current !== null && pointerId !== pointerIdRef.current) return
+      pendingPointRef.current = { x: clientX, y: clientY }
       if (rafRef.current !== null) return
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null
@@ -147,9 +151,9 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
   )
 
   const stopDrag = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
+    (pointerId?: number) => {
       if (!isDragging) return
-      if (pointerIdRef.current !== null && event.pointerId !== pointerIdRef.current) return
+      if (pointerIdRef.current !== null && pointerId !== undefined && pointerId !== pointerIdRef.current) return
 
       setIsDragging(false)
       pointerIdRef.current = null
@@ -180,6 +184,41 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
     },
     [isDragging, isHumanLikeTrajectory, onVerify, threshold]
   )
+
+  const onPointerMove = React.useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      queueDragMove(event.pointerId, event.clientX, event.clientY)
+    },
+    [queueDragMove]
+  )
+
+  const onPointerUp = React.useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      stopDrag(event.pointerId)
+    },
+    [stopDrag]
+  )
+
+  React.useEffect(() => {
+    if (!isDragging) return
+
+    const handlePointerMove = (event: PointerEvent) => {
+      queueDragMove(event.pointerId, event.clientX, event.clientY)
+    }
+    const handlePointerEnd = (event: PointerEvent) => {
+      stopDrag(event.pointerId)
+    }
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: true })
+    window.addEventListener("pointerup", handlePointerEnd)
+    window.addEventListener("pointercancel", handlePointerEnd)
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerEnd)
+      window.removeEventListener("pointercancel", handlePointerEnd)
+    }
+  }, [isDragging, queueDragMove, stopDrag])
 
   React.useEffect(() => {
     return () => {
@@ -230,7 +269,7 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
         <button
           type="button"
           className={cn(
-            "absolute top-1/2 -translate-y-1/2 h-8 w-8 rounded-md border bg-background shadow-sm",
+            "absolute top-1/2 -translate-y-1/2 h-8 w-8 rounded-md border bg-background shadow-sm touch-none",
             "flex items-center justify-center text-muted-foreground transition-colors",
             status === "dragging" && "border-primary text-primary",
             status === "success" && "border-emerald-500 text-emerald-600",
@@ -239,8 +278,8 @@ export function SliderCaptcha({ onVerify, disabled }: SliderCaptchaProps) {
           style={{ left: `${position}px` }}
           onPointerDown={startDrag}
           onPointerMove={onPointerMove}
-          onPointerUp={stopDrag}
-          onPointerCancel={stopDrag}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
           disabled={disabled || verified}
           aria-label="Slide to verify"
         >
