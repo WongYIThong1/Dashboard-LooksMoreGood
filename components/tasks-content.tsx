@@ -430,6 +430,59 @@ export function TasksContent() {
     []
   )
 
+  const mapApiTaskToTask = React.useCallback((task: ApiTask, existing?: Task): Task | null => {
+    const id = (task.id || "").trim()
+    if (!id) return null
+
+    const normalizedStatus = normalizeTaskStatus(task.status)
+    if (normalizedStatus === "deleted") return null
+
+    const found = Number.isFinite(Number(task.found)) ? Math.max(0, Math.trunc(Number(task.found))) : (existing?.found ?? 0)
+    const targetRaw = Number(task.target ?? NaN)
+    const targetTotal =
+      Number.isFinite(targetRaw) && targetRaw >= 0 ? Math.trunc(targetRaw) : (existing?.targetTotal ?? null)
+    const progressPercent =
+      targetTotal && targetTotal > 0
+        ? Math.max(0, Math.min(100, Math.round((found / targetTotal) * 100)))
+        : (existing?.progressPercent ?? 0)
+
+    return {
+      id,
+      name: (task.name || existing?.name || "Untitled Task").trim(),
+      status: normalizedStatus,
+      found,
+      etaSeconds: existing?.etaSeconds ?? 0,
+      targetTotal,
+      remaining: targetTotal !== null ? Math.max(0, targetTotal - found) : (existing?.remaining ?? null),
+      progressPercent,
+      target: task.target ?? existing?.target ?? null,
+      file: task.file || existing?.file || "-",
+      started: existing?.started || "-",
+      startedTime: task.started_time || existing?.startedTime || "-",
+      isRunning: normalizedStatus === "running" || normalizedStatus === "running_recon",
+    }
+  }, [])
+
+  const refreshTasksInBackground = React.useCallback(async () => {
+    try {
+      const response = await fetch("/api/v1/tasks", {
+        method: "GET",
+        credentials: "include",
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || !data?.success || !Array.isArray(data?.tasks)) return
+
+      setTasksData((prev) => {
+        const byId = new Map(prev.map((item) => [item.id, item]))
+        return (data.tasks as ApiTask[])
+          .map((task) => mapApiTaskToTask(task, byId.get(task.id)))
+          .filter((item): item is Task => !!item)
+      })
+    } catch (error) {
+      console.error("Background refresh after delete failed:", error)
+    }
+  }, [mapApiTaskToTask])
+
   React.useEffect(() => {
     const fetchSettings = async () => {
       try {
@@ -729,9 +782,10 @@ export function TasksContent() {
   const confirmDeleteTask = async () => {
     if (!deleteTargetTask) return
 
+    const targetTaskId = deleteTargetTask.id
     setIsDeleting(true)
     try {
-      const response = await fetch(`/api/v1/tasks/${deleteTargetTask.id}`, {
+      const response = await fetch(`/api/v1/tasks/${targetTaskId}`, {
         method: "DELETE",
         credentials: "include",
       })
@@ -744,8 +798,11 @@ export function TasksContent() {
       }
 
       toast.success("Task deleted")
-      setTasksData((prev) => prev.filter((item) => item.id !== deleteTargetTask.id))
+      setTasksData((prev) => prev.filter((item) => item.id !== targetTaskId))
       setDeleteTargetTask(null)
+      setUserSseReconnectNonce((prev) => prev + 1)
+      void refreshTasksInBackground()
+      router.refresh()
     } catch (error) {
       console.error("Delete task error:", error)
       toast.error(error instanceof Error ? error.message : "Failed to delete task")
@@ -1341,4 +1398,3 @@ export function TasksContent() {
     </div>
   )
 }
-
