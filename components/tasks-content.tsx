@@ -510,10 +510,11 @@ export function TasksContent() {
       )
       const payload = data as { success?: boolean; tasks?: ApiTask[] } | null
       if (!response.ok || !payload?.success || !Array.isArray(payload.tasks)) return
+      const nextTasks = payload.tasks
 
       setTasksData((prev) => {
         const byId = new Map(prev.map((item) => [item.id, item]))
-        return payload.tasks
+        return nextTasks
           .map((task) => mapApiTaskToTask(task, byId.get(task.id)))
           .filter((item): item is Task => !!item)
       })
