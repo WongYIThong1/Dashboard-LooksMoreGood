@@ -139,6 +139,61 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString()
 }
 
+type TextPart = {
+  type: "text" | "link"
+  content: string
+  href?: string
+}
+
+function parseAnnouncementText(input: string): TextPart[] {
+  const text = input ?? ""
+  const parts: TextPart[] = []
+  const tokenRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s]+)/gi
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = tokenRegex.exec(text)) !== null) {
+    const start = match.index
+    if (start > lastIndex) {
+      parts.push({ type: "text", content: text.slice(lastIndex, start) })
+    }
+
+    if (match[1] && match[2]) {
+      parts.push({ type: "link", content: match[1], href: match[2] })
+    } else if (match[3]) {
+      parts.push({ type: "link", content: match[3], href: match[3] })
+    }
+
+    lastIndex = tokenRegex.lastIndex
+  }
+
+  if (lastIndex < text.length) {
+    parts.push({ type: "text", content: text.slice(lastIndex) })
+  }
+
+  return parts.length > 0 ? parts : [{ type: "text", content: text }]
+}
+
+function renderAnnouncementText(input: string): React.ReactNode {
+  const parts = parseAnnouncementText(input)
+  return parts.map((part, index) => {
+    if (part.type === "link" && part.href) {
+      return (
+        <a
+          key={`${part.href}-${index}`}
+          href={part.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-2 text-blue-600 hover:text-blue-500"
+        >
+          {part.content}
+        </a>
+      )
+    }
+    return <React.Fragment key={`text-${index}`}>{part.content}</React.Fragment>
+  })
+}
+
 function useFastCountUp(target: number, durationMs = 600): number {
   const [value, setValue] = React.useState(0)
 
@@ -834,8 +889,8 @@ export function DashboardContent() {
                 <div key={item.id} className="flex gap-3">
                   <div className="mt-1.5 size-2 rounded-full bg-blue-500" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{item.main}</p>
-                    <p className="truncate text-xs text-muted-foreground">{item.subtext}</p>
+                    <p className="text-sm font-medium break-words whitespace-pre-wrap">{renderAnnouncementText(item.main)}</p>
+                    <p className="text-xs text-muted-foreground break-words whitespace-pre-wrap">{renderAnnouncementText(item.subtext)}</p>
                   </div>
                 </div>
               ))}
