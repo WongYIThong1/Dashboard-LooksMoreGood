@@ -134,6 +134,11 @@ interface UserTaskUpdateEvent {
   ts?: number
 }
 
+interface TasksCachePayload {
+  ts: number
+  tasks: Task[]
+}
+
 const statusConfig = {
   pending: { icon: IconClock, label: "Pending", dotClass: "bg-yellow-500" },
   running: { icon: IconLoader2, label: "Running", dotClass: "bg-blue-500" },
@@ -201,6 +206,26 @@ function getHttpErrorMessage(
   if (status === 429) return "Too many requests. Please try again later"
   if (status >= 500) return "Server error. Please try again later"
   return fallback
+}
+
+async function fetchJsonWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<{ response: Response; data: unknown; durationMs: number }> {
+  const controller = new AbortController()
+  const start = Date.now()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    })
+    const data = await response.json().catch(() => null)
+    return { response, data, durationMs: Date.now() - start }
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 function EtaCountdown({ etaSeconds, status }: { etaSeconds: number; status: TaskStatus }) {
@@ -333,8 +358,16 @@ const getColumns = (onDeleteTask: (task: Task) => void): ColumnDef<Task>[] => [
 
 export function TasksContent() {
   const router = useRouter()
+  const TASKS_CACHE_KEY = "tasks_list_cache_v1"
+  const SLOW_SERVER_THRESHOLD_MS = 1800
+  const TASKS_SNAPSHOT_TIMEOUT_MS = 8000
+  const POLLING_INTERVAL_MS = 15000
   const [isLoading, setIsLoading] = React.useState(true)
   const [tasksData, setTasksData] = React.useState<Task[]>([])
+  const [isStaleCache, setIsStaleCache] = React.useState(false)
+  const [lastSyncAt, setLastSyncAt] = React.useState<number | null>(null)
+  const [slowServer, setSlowServer] = React.useState(false)
+  const [streamMode, setStreamMode] = React.useState<"connecting" | "live" | "retrying" | "polling">("connecting")
   const [maxTasks, setMaxTasks] = React.useState(0)
   const [userPlan, setUserPlan] = React.useState<string | null>(null)
   const [showCreateDialog, setShowCreateDialog] = React.useState(false)
@@ -375,6 +408,8 @@ export function TasksContent() {
   const userSseRetryTimerRef = React.useRef<number | null>(null)
   const userSseRetryCountRef = React.useRef(0)
   const userLastEventIdRef = React.useRef("")
+  const pollingTimerRef = React.useRef<number | null>(null)
+  const bootstrapLoadedRef = React.useRef(false)
 
   const mapUserSummaryToTask = React.useCallback(
     (summary: UserTaskSummary, existing?: Task): Task | null => {
@@ -465,23 +500,100 @@ export function TasksContent() {
 
   const refreshTasksInBackground = React.useCallback(async () => {
     try {
-      const response = await fetch("/api/v1/tasks", {
-        method: "GET",
-        credentials: "include",
-      })
-      const data = await response.json().catch(() => null)
-      if (!response.ok || !data?.success || !Array.isArray(data?.tasks)) return
+      const { response, data, durationMs } = await fetchJsonWithTimeout(
+        "/api/v1/tasks",
+        {
+          method: "GET",
+          credentials: "include",
+        },
+        TASKS_SNAPSHOT_TIMEOUT_MS
+      )
+      const payload = data as { success?: boolean; tasks?: ApiTask[] } | null
+      if (!response.ok || !payload?.success || !Array.isArray(payload.tasks)) return
 
       setTasksData((prev) => {
         const byId = new Map(prev.map((item) => [item.id, item]))
-        return (data.tasks as ApiTask[])
+        return payload.tasks
           .map((task) => mapApiTaskToTask(task, byId.get(task.id)))
           .filter((item): item is Task => !!item)
       })
+      setIsLoading(false)
+      setLastSyncAt(Date.now())
+      setIsStaleCache(false)
+      setSlowServer(durationMs >= SLOW_SERVER_THRESHOLD_MS)
     } catch (error) {
       console.error("Background refresh after delete failed:", error)
     }
-  }, [mapApiTaskToTask])
+  }, [mapApiTaskToTask, SLOW_SERVER_THRESHOLD_MS, TASKS_SNAPSHOT_TIMEOUT_MS])
+
+  const loadTasksSnapshot = React.useCallback(
+    async (options?: { silent?: boolean; reason?: "bootstrap" | "polling" | "manual" }) => {
+      const silent = options?.silent === true
+      try {
+        const { response, data, durationMs } = await fetchJsonWithTimeout(
+          "/api/v1/tasks",
+          {
+            method: "GET",
+            credentials: "include",
+          },
+          TASKS_SNAPSHOT_TIMEOUT_MS
+        )
+        if (!response.ok || !data || typeof data !== "object" || !(data as { success?: boolean }).success) {
+          throw new Error(getHttpErrorMessage(response.status, "Failed to fetch tasks"))
+        }
+        const tasks = Array.isArray((data as { tasks?: ApiTask[] }).tasks)
+          ? ((data as { tasks?: ApiTask[] }).tasks as ApiTask[])
+          : []
+        setTasksData((prev) => {
+          const byId = new Map(prev.map((item) => [item.id, item]))
+          return tasks
+            .map((task) => mapApiTaskToTask(task, byId.get(task.id)))
+            .filter((item): item is Task => !!item)
+        })
+        setIsLoading(false)
+        setLastSyncAt(Date.now())
+        setIsStaleCache(false)
+        setSlowServer(durationMs >= SLOW_SERVER_THRESHOLD_MS)
+        return true
+      } catch (error) {
+        if (!silent) {
+          toast.error(error instanceof Error ? error.message : "Failed to load tasks")
+        }
+        return false
+      }
+    },
+    [SLOW_SERVER_THRESHOLD_MS, TASKS_SNAPSHOT_TIMEOUT_MS, mapApiTaskToTask]
+  )
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const raw = window.localStorage.getItem(TASKS_CACHE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as TasksCachePayload
+      if (!parsed || !Array.isArray(parsed.tasks)) return
+      setTasksData(parsed.tasks)
+      setIsLoading(false)
+      setIsStaleCache(true)
+      setLastSyncAt(typeof parsed.ts === "number" ? parsed.ts : Date.now())
+    } catch (error) {
+      console.warn("Failed to restore tasks cache:", error)
+    }
+  }, [TASKS_CACHE_KEY])
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    if (isLoading) return
+    try {
+      const payload: TasksCachePayload = {
+        ts: Date.now(),
+        tasks: tasksData,
+      }
+      window.localStorage.setItem(TASKS_CACHE_KEY, JSON.stringify(payload))
+    } catch (error) {
+      console.warn("Failed to persist tasks cache:", error)
+    }
+  }, [TASKS_CACHE_KEY, isLoading, tasksData])
 
   React.useEffect(() => {
     const fetchSettings = async () => {
@@ -562,6 +674,7 @@ export function TasksContent() {
       const retry = userSseRetryCountRef.current + 1
       userSseRetryCountRef.current = retry
       const delay = Math.min(30000, 1000 * 2 ** Math.min(retry, 5))
+      setStreamMode(retry >= 3 ? "polling" : "retrying")
       userSseRetryTimerRef.current = window.setTimeout(() => {
         void connectUserSSE()
       }, delay)
@@ -582,6 +695,10 @@ export function TasksContent() {
               .filter((item): item is Task => !!item)
           })
           setIsLoading(false)
+          setStreamMode("live")
+          setIsStaleCache(false)
+          setSlowServer(false)
+          setLastSyncAt(Date.now())
         } else if (type === "task_update") {
           const event = parsed as UserTaskUpdateEvent
           const summary = event.task
@@ -602,6 +719,10 @@ export function TasksContent() {
             return [mapped, ...prev]
           })
           setIsLoading(false)
+          setStreamMode("live")
+          setIsStaleCache(false)
+          setSlowServer(false)
+          setLastSyncAt(Date.now())
         }
       } catch (error) {
         console.error("[User SSE] parse error:", error, raw)
@@ -610,6 +731,7 @@ export function TasksContent() {
 
     const connectUserSSE = async () => {
       if (cancelled) return
+      setStreamMode("connecting")
       try {
         userSseAbortRef.current?.abort()
         const controller = new AbortController()
@@ -641,6 +763,7 @@ export function TasksContent() {
         }
 
         userSseRetryCountRef.current = 0
+        setStreamMode("live")
         setIsLoading(false)
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
@@ -699,6 +822,48 @@ export function TasksContent() {
       userSseAbortRef.current = null
     }
   }, [getAccessToken, mapUserSummaryToTask, userSseReconnectNonce])
+
+  React.useEffect(() => {
+    if (bootstrapLoadedRef.current) return
+    bootstrapLoadedRef.current = true
+    let cancelled = false
+    ;(async () => {
+      const ok = await loadTasksSnapshot({ silent: true, reason: "bootstrap" })
+      if (cancelled) return
+      if (!ok && tasksData.length === 0) {
+        setIsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [loadTasksSnapshot, tasksData.length])
+
+  React.useEffect(() => {
+    if (streamMode === "live") {
+      if (pollingTimerRef.current) {
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
+      return
+    }
+
+    if (pollingTimerRef.current) {
+      window.clearInterval(pollingTimerRef.current)
+      pollingTimerRef.current = null
+    }
+
+    pollingTimerRef.current = window.setInterval(() => {
+      void loadTasksSnapshot({ silent: true, reason: "polling" })
+    }, POLLING_INTERVAL_MS)
+
+    return () => {
+      if (pollingTimerRef.current) {
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
+    }
+  }, [POLLING_INTERVAL_MS, loadTasksSnapshot, streamMode])
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -829,6 +994,15 @@ export function TasksContent() {
     maxTasks > 0 ? Math.min(100, Math.round((tasksData.length / maxTasks) * 100)) : 0
 
   const columns = getColumns(handleDeleteTask)
+  const connectionLabel =
+    streamMode === "live"
+      ? "Live updates connected"
+      : streamMode === "polling"
+        ? "Realtime unavailable, using fallback polling"
+        : streamMode === "retrying"
+          ? "Reconnecting to realtime stream"
+          : "Connecting to realtime stream"
+  const lastSyncLabel = lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : "--"
 
   const table = useReactTable({
     data: filteredTasks,
@@ -908,30 +1082,70 @@ export function TasksContent() {
                 </div>
               </div>
 
-              <Select
-                value={statusFilter}
-                onValueChange={(v) => {
-                  setStatusFilter(v as typeof statusFilter)
-                  table.setPageIndex(0)
-                }}
-              >
-                <SelectTrigger className="h-9 w-[180px]">
-                  <SelectValue placeholder="Filter status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="running">Running</SelectItem>
-                  <SelectItem value="complete">Completed</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={statusFilter}
+                  onValueChange={(v) => {
+                    setStatusFilter(v as typeof statusFilter)
+                    table.setPageIndex(0)
+                  }}
+                >
+                  <SelectTrigger className="h-9 w-[180px]">
+                    <SelectValue placeholder="Filter status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All statuses</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="running">Running</SelectItem>
+                    <SelectItem value="complete">Completed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    void loadTasksSnapshot({ reason: "manual" })
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>{connectionLabel}</span>
+              <span className="text-muted-foreground/50">•</span>
+              <span>Last sync: {lastSyncLabel}</span>
+              {isStaleCache ? (
+                <>
+                  <span className="text-muted-foreground/50">•</span>
+                  <span>Showing cached data</span>
+                </>
+              ) : null}
+              {slowServer ? (
+                <>
+                  <span className="text-muted-foreground/50">•</span>
+                  <span>Server is slow, auto-retrying in background</span>
+                </>
+              ) : null}
             </div>
 
             {/* Table (integrated, minimal chrome) */}
             <div className="border-y">
-              {isLoading ? (
-                <div className="flex items-center justify-center h-64">
-                  <IconLoader2 className="size-8 animate-spin text-muted-foreground" />
+              {isLoading && tasksData.length === 0 ? (
+                <div className="h-64 p-3">
+                  <div className="space-y-3">
+                    {Array.from({ length: 8 }).map((_, idx) => (
+                      <div key={`task-skeleton-${idx}`} className="grid grid-cols-6 gap-3">
+                        <div className="h-4 rounded bg-muted animate-pulse col-span-2" />
+                        <div className="h-4 rounded bg-muted animate-pulse col-span-1" />
+                        <div className="h-4 rounded bg-muted animate-pulse col-span-1" />
+                        <div className="h-4 rounded bg-muted animate-pulse col-span-1" />
+                        <div className="h-4 rounded bg-muted animate-pulse col-span-1" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : (
                 <Table className="table-fixed">

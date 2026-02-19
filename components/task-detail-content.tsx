@@ -1536,7 +1536,11 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           }
         }
       })
-      eventObserver.observe({ type: "event", buffered: true, durationThreshold: 120 })
+      eventObserver.observe(
+        { type: "event", buffered: true, durationThreshold: 120 } as PerformanceObserverInit & {
+          durationThreshold: number
+        }
+      )
       observers.push(eventObserver)
     }
 
