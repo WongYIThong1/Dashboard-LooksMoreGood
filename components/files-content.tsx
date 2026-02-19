@@ -775,18 +775,28 @@ function formatStorageSize(bytes: number): string {
       })
 
       if (!response.ok) {
-        const errData = await response.json().catch(() => null)
+        const rawBody = await response.text().catch(() => "")
+        let errData: unknown = null
+        if (rawBody) {
+          try {
+            errData = JSON.parse(rawBody)
+          } catch {
+            errData = null
+          }
+        }
+        const parsed = errData as { message?: unknown; error?: unknown } | null
         const apiMessage =
-          typeof errData?.message === "string"
-            ? errData.message
-            : typeof errData?.error === "string"
-              ? errData.error
+          typeof parsed?.message === "string"
+            ? parsed.message
+            : typeof parsed?.error === "string"
+              ? parsed.error
               : null
         throw new Error(
           apiMessage ||
             getHttpErrorMessage(response.status, "Failed to upload file", {
               forbiddenMessage: "Upload is blocked by plan or storage quota",
-            })
+            }) ||
+            `Upload failed (HTTP ${response.status})`
         )
       }
 

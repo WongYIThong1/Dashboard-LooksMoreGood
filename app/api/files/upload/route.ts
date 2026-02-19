@@ -47,6 +47,11 @@ async function countLinesInTextFile(file: File, maxBytes: number) {
     lineCount += 1
   }
 
+  // Re-check after counting the trailing line (file may not end with newline).
+  if (lineCount > MAX_URL_FILE_LINES) {
+    throw new Error("LINE_LIMIT_EXCEEDED")
+  }
+
   return lineCount
 }
 
