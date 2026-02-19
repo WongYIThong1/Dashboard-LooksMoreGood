@@ -31,12 +31,22 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const requestId = createRequestId()
+  const startedAt = Date.now()
 
   try {
     const csrfError = sameOriginWriteGuard(request, requestId)
-    if (csrfError) return csrfError
+    if (csrfError) {
+      console.warn("[api/v1/tasks/[id]/start] blocked by sameOriginWriteGuard", { requestId })
+      return csrfError
+    }
 
     const { id: taskId } = await params
+    console.log("[api/v1/tasks/[id]/start] request", {
+      requestId,
+      taskId,
+      referer: request.headers.get("referer") || "-",
+      secFetchSite: request.headers.get("sec-fetch-site") || "-",
+    })
     if (!isUuid(taskId)) {
       return errorResponse(400, "VALIDATION_ERROR", "Invalid task id format", requestId)
     }
@@ -48,6 +58,7 @@ export async function POST(
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
+      console.warn("[api/v1/tasks/[id]/start] unauthorized user", { requestId, taskId })
       return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
@@ -57,6 +68,7 @@ export async function POST(
     } = await supabase.auth.getSession()
 
     if (sessionError || !session?.access_token) {
+      console.warn("[api/v1/tasks/[id]/start] no active session", { requestId, taskId, userId: user.id })
       return errorResponse(401, "UNAUTHORIZED", "No active session", requestId)
     }
 
@@ -67,22 +79,35 @@ export async function POST(
       .single()
 
     if (profileError || !profile) {
+      console.warn("[api/v1/tasks/[id]/start] profile not found", { requestId, taskId, userId: user.id })
       return errorResponse(404, "NOT_FOUND", "User profile not found", requestId)
     }
 
     if (profile.plan === "Free") {
+      console.warn("[api/v1/tasks/[id]/start] rejected by plan", {
+        requestId,
+        taskId,
+        userId: user.id,
+        plan: profile.plan,
+      })
       return errorResponse(
         403,
-        "FORBIDDEN",
+        "FREE_PLAN_LIMIT",
         "Free plan users cannot start tasks. Please upgrade to Pro or Pro+.",
         requestId
       )
     }
 
     if (profile.credits < 1) {
+      console.warn("[api/v1/tasks/[id]/start] rejected by credits", {
+        requestId,
+        taskId,
+        userId: user.id,
+        credits: profile.credits,
+      })
       return errorResponse(
         403,
-        "FORBIDDEN",
+        "INSUFFICIENT_CREDITS",
         "Insufficient credits. Please purchase more credits.",
         requestId
       )
@@ -96,10 +121,16 @@ export async function POST(
       .single()
 
     if (taskError || !task) {
+      console.warn("[api/v1/tasks/[id]/start] task not found or denied", { requestId, taskId, userId: user.id })
       return errorResponse(404, "NOT_FOUND", "Task not found or access denied", requestId)
     }
 
     if (task.status === "running" || task.status === "running_recon") {
+      console.warn("[api/v1/tasks/[id]/start] task already running", {
+        requestId,
+        taskId,
+        status: task.status,
+      })
       return errorResponse(409, "CONFLICT", "Task is already running", requestId)
     }
 
@@ -111,6 +142,7 @@ export async function POST(
       .single()
 
     if (fileError || !file) {
+      console.warn("[api/v1/tasks/[id]/start] file not found", { requestId, taskId, fileId: task.file_id })
       return errorResponse(404, "NOT_FOUND", "File not found", requestId)
     }
 
@@ -119,6 +151,7 @@ export async function POST(
       .createSignedUrl(file.file_path, 3600 * 24 * 7)
 
     if (!urlData?.signedUrl) {
+      console.error("[api/v1/tasks/[id]/start] failed to generate signed URL", { requestId, taskId })
       return errorResponse(500, "INTERNAL_ERROR", "Failed to generate download URL", requestId)
     }
 
@@ -135,6 +168,7 @@ export async function POST(
     )
 
     if (!safeExternalBaseUrl) {
+      console.error("[api/v1/tasks/[id]/start] external host not allowed", { requestId, taskId })
       return errorResponse(500, "SERVER_MISCONFIGURED", "External API host is not allowed", requestId)
     }
 
@@ -164,6 +198,11 @@ export async function POST(
 
     const externalData = await externalResponse.json().catch(() => null)
     if (!externalResponse.ok) {
+      console.error("[api/v1/tasks/[id]/start] upstream start failed", {
+        requestId,
+        taskId,
+        upstreamStatus: externalResponse.status,
+      })
       return errorResponse(502, "UPSTREAM_ERROR", "Failed to start task on external server", requestId, {
         upstreamStatus: externalResponse.status,
       })
@@ -178,6 +217,10 @@ export async function POST(
     })
   } catch (error) {
     return internalErrorResponse(requestId, "api/v1/tasks/[id]/start", error)
+  } finally {
+    console.log("[api/v1/tasks/[id]/start] completed", {
+      requestId,
+      durationMs: Date.now() - startedAt,
+    })
   }
 }
-

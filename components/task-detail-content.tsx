@@ -174,6 +174,7 @@ interface DumperStatsSSEPayload {
     domain?: string
     country?: string
     category?: string
+    long_task?: boolean
     rows?: string | number
     progress?: number
     total?: number
@@ -571,6 +572,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       domain: string
       country: string
       category: string
+      longTask: boolean
       rows: number
       statusKind: "dumped" | "progress"
       statusLabel: string
@@ -587,6 +589,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           const domain = (item.domain || "-").trim()
           const country = (item.country || "-").trim() || "-"
           const category = (item.category || "-").trim() || "-"
+          const longTask = item.long_task === true
           const totalRaw = typeof item.total === "number" && Number.isFinite(item.total) ? Math.max(0, Math.trunc(item.total)) : 0
           const progressRaw =
             typeof item.progress === "number" && Number.isFinite(item.progress) ? Math.max(0, Math.trunc(item.progress)) : 0
@@ -632,6 +635,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             domain,
             country,
             category,
+            longTask,
             rows: rows > 0 ? rows : total,
             statusKind: isDumped ? ("dumped" as const) : ("progress" as const),
             statusLabel: isDumped
@@ -759,6 +763,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [taskDoneReceived, setTaskDoneReceived] = React.useState(false)
   const [loaderIsDone, setLoaderIsDone] = React.useState(false)
   const hasFetched = React.useRef(false)
+  const startRequestInFlightRef = React.useRef(false)
+  const lastStartAttemptAtRef = React.useRef(0)
   const sseAbortController = React.useRef<AbortController | null>(null)
   const timeAnimationInterval = React.useRef<number | null>(null)
   const sseRetryCount = React.useRef<number>(0)
@@ -848,7 +854,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       setIsCheckingTask(true)
       setTaskNotFound(false) // 重置状态
       try {
-        const response = await fetch(`/api/v1/tasks/${id}`, {
+        const response = await fetch(`/api/v1/tasks/${id}?source=validate_task`, {
           method: 'GET',
           credentials: 'include',
           cache: 'no-store',
@@ -1265,7 +1271,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   // Fetch full task data from Supabase
   const fetchFullTaskDataFromSupabase = async (shouldConnectSSE: boolean = false) => {
     try {
-      const response = await fetch(`/api/v1/tasks/${id}`, {
+      const response = await fetch(`/api/v1/tasks/${id}?source=task_detail_load`, {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
@@ -2051,7 +2057,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const fetchSettings = async () => {
     setIsLoadingSettings(true)
     try {
-      const response = await fetch(`/api/v1/tasks/${id}`, {
+      const response = await fetch(`/api/v1/tasks/${id}?source=settings_dialog`, {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
@@ -2091,6 +2097,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   }
 
   const handleStart = async () => {
+    const now = Date.now()
+    if (startRequestInFlightRef.current) return
+    if (now - lastStartAttemptAtRef.current < 1500) return
+
+    startRequestInFlightRef.current = true
+    lastStartAttemptAtRef.current = now
     setIsStarting(true)
     taskDoneToastShown.current = false
 
@@ -2106,7 +2118,23 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       const data = await response.json().catch(() => null)
 
       if (!response.ok || !data?.success) {
-        toast.error(getHttpErrorMessage(response.status, "Failed to start task"))
+        const apiCode = typeof data?.code === "string" ? data.code : ""
+        const apiMessage =
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : null
+        const fallback = getHttpErrorMessage(response.status, "Failed to start task")
+        const finalMessage = apiMessage || fallback
+        console.error("[TaskDetail] start rejected", {
+          taskId: id,
+          status: response.status,
+          code: apiCode || "UNKNOWN",
+          requestId: typeof data?.requestId === "string" ? data.requestId : null,
+          message: finalMessage,
+        })
+        toast.error(apiCode ? `${finalMessage} (${apiCode})` : finalMessage)
         return
       }
 
@@ -2117,6 +2145,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       console.error('Start task error:', error)
       toast.error('Please Try Again')
     } finally {
+      startRequestInFlightRef.current = false
       setIsStarting(false)
     }
   }
@@ -2666,6 +2695,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      domain: row.domain || "-",
 	      country: row.country || "-",
 	      category: row.type && row.type !== "-" ? row.type : "-",
+	      longTask: false,
 	      rows: row.rows > 0 ? row.rows : 0,
 	      statusKind: row.status === "complete" ? ("dumped" as const) : ("progress" as const),
 	      statusLabel: row.status === "complete" ? "Dumped" : statusConfig[row.status].label,
@@ -2825,6 +2855,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
               <Button
                 variant="outline"
                 size="icon"
+                type="button"
                 className="size-8"
                 onClick={handleStart}
                 disabled={isStartDisabled}
@@ -3308,7 +3339,21 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                        ) : hasDumpRows ? (
 	                          sortedDumpRows.map((item) => (
 	                            <TableRow key={item.key} className="hover:bg-transparent">
-	                              <TableCell className="truncate font-medium">{item.domain}</TableCell>
+	                              <TableCell className="font-medium">
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <span className="block min-w-0 max-w-[220px] flex-1 truncate" title={item.domain}>
+                                      {item.domain}
+                                    </span>
+                                    {item.longTask ? (
+                                      <Badge
+                                        variant="outline"
+                                        className="ml-auto shrink-0 border-amber-200 bg-amber-50 px-1.5 py-0 text-[10px] font-mono text-amber-700 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300"
+                                      >
+                                        Long Task
+                                      </Badge>
+                                    ) : null}
+                                  </div>
+                                </TableCell>
 	                              <TableCell className="text-muted-foreground">{item.country}</TableCell>
 	                              <TableCell>
 	                                <span className="text-muted-foreground">{item.category || "-"}</span>

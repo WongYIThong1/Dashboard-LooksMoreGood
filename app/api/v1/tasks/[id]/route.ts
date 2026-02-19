@@ -25,14 +25,34 @@ function booleanOrUndefined(value: unknown): boolean | undefined {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const requestId = createRequestId()
+  const startedAt = Date.now()
+  const requestUrl = new URL(request.url)
+  const source = requestUrl.searchParams.get("source") || "unknown"
+  const referer = request.headers.get("referer") || "-"
+  const secFetchSite = request.headers.get("sec-fetch-site") || "-"
+  const userAgent = request.headers.get("user-agent") || "-"
 
   try {
     const { id: taskId } = await params
+    console.log("[api/v1/tasks/[id]] GET request", {
+      requestId,
+      taskId,
+      source,
+      path: requestUrl.pathname,
+      referer,
+      secFetchSite,
+      userAgent,
+    })
     if (!isUuid(taskId)) {
+      console.warn("[api/v1/tasks/[id]] GET invalid task id", {
+        requestId,
+        taskId,
+        source,
+      })
       return errorResponse(400, "VALIDATION_ERROR", "Invalid task id format", requestId)
     }
 
@@ -43,6 +63,11 @@ export async function GET(
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
+      console.warn("[api/v1/tasks/[id]] GET unauthorized", {
+        requestId,
+        taskId,
+        source,
+      })
       return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
@@ -54,6 +79,12 @@ export async function GET(
       .single()
 
     if (taskError || !task) {
+      console.warn("[api/v1/tasks/[id]] GET task not found", {
+        requestId,
+        taskId,
+        source,
+        userId: user.id,
+      })
       return errorResponse(404, "NOT_FOUND", "Task not found", requestId)
     }
 
@@ -97,6 +128,12 @@ export async function GET(
     })
   } catch (error) {
     return internalErrorResponse(requestId, "api/v1/tasks/[id]", error)
+  } finally {
+    console.log("[api/v1/tasks/[id]] GET completed", {
+      requestId,
+      source,
+      durationMs: Date.now() - startedAt,
+    })
   }
 }
 
@@ -286,4 +323,3 @@ export async function PATCH(
     return internalErrorResponse(requestId, "api/v1/tasks/[id]", error)
   }
 }
-
