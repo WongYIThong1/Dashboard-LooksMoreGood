@@ -115,7 +115,18 @@ export async function POST(
 
     const { data: task, error: taskError } = await supabase
       .from("tasks")
-      .select("*")
+      .select(
+        `
+        id,
+        name,
+        status,
+        file_id,
+        auto_dumper,
+        preset,
+        parameter_risk_filter,
+        ai_sensitivity_level
+      `
+      )
       .eq("id", taskId)
       .eq("user_id", user.id)
       .single()

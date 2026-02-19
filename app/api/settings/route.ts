@@ -7,6 +7,13 @@ import {
   sameOriginWriteGuard,
 } from "@/lib/api/security"
 
+function normalizePlan(plan: unknown): "Free" | "Pro" | "Pro+" {
+  const value = typeof plan === "string" ? plan.trim().toLowerCase() : ""
+  if (value === "pro+" || value === "pro plus" || value === "pro_plus") return "Pro+"
+  if (value === "pro") return "Pro"
+  return "Free"
+}
+
 export async function GET() {
   const requestId = createRequestId()
 
@@ -51,7 +58,7 @@ export async function GET() {
       success: true,
       username: profile.username || "User",
       email: profile.email || user.email || "user@example.com",
-      plan: profile.plan || "Free",
+      plan: normalizePlan(profile.plan),
       credits: profile.credits || 0,
       notification: profile.system_notification,
       privacy: profile.privacy_mode,
@@ -110,4 +117,3 @@ export async function PUT(request: Request) {
     return internalErrorResponse(requestId, "api/settings", error)
   }
 }
-

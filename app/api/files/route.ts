@@ -34,7 +34,7 @@ export async function GET(request: Request) {
 
     let filesQuery = supabase
       .from("user_files")
-      .select("*")
+      .select("id, filename, file_type, updated_at, file_size, line_count")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
 
@@ -143,4 +143,3 @@ export async function DELETE(request: Request) {
     return internalErrorResponse(requestId, "api/files", error)
   }
 }
-

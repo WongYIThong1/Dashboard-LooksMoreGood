@@ -33,7 +33,12 @@ export async function GET() {
       .from("tasks")
       .select(
         `
-        *,
+        id,
+        name,
+        status,
+        found,
+        target,
+        started_at,
         user_files!tasks_file_id_fkey (
           filename
         )
@@ -46,15 +51,18 @@ export async function GET() {
       return errorResponse(500, "INTERNAL_ERROR", "Failed to fetch tasks", requestId)
     }
 
-    const transformedTasks = (tasks || []).map((task) => ({
+    const transformedTasks = (tasks || []).map((task) => {
+      const joinedFile = Array.isArray(task.user_files) ? task.user_files[0] : task.user_files
+      return {
       id: task.id,
       name: task.name,
       status: task.status,
       found: task.found,
       target: task.target || null,
-      file: task.user_files?.filename || "Unknown",
+      file: joinedFile?.filename || "Unknown",
       started_time: task.started_at || null,
-    }))
+      }
+    })
 
     return NextResponse.json({
       success: true,
@@ -199,4 +207,3 @@ export async function POST(request: Request) {
     return internalErrorResponse(requestId, "api/v1/tasks", error)
   }
 }
-

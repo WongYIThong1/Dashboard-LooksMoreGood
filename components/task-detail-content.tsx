@@ -134,7 +134,9 @@ interface TaskDetailContentProps {
   id: string
 }
 
-type DumpSortBy = "domain" | "country" | "category" | "status"
+type DumpSortBy = "domain" | "country" | "category" | "rows" | "status"
+type DumpRowsSortOrder = "asc" | "desc"
+type DumpStatusSortPreference = "dumped_first" | "progress_first"
 type InjectionSortBy = "domain" | "country" | "category"
 
 interface StatsSSEPayload {
@@ -738,6 +740,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [showSettings, setShowSettings] = React.useState(false)
   const [isLoadingSettings, setIsLoadingSettings] = React.useState(false)
   const [isSaving, setIsSaving] = React.useState(false)
+  const HIDDEN_DISCONNECT_AFTER_MS = 60_000
   
   // Delete dialog state
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false)
@@ -766,6 +769,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [isDownloadingInjection, setIsDownloadingInjection] = React.useState(false)
   const [injectionSortBy, setInjectionSortBy] = React.useState<InjectionSortBy>("category")
   const [dumpSortBy, setDumpSortBy] = React.useState<DumpSortBy>("domain")
+  const [dumpRowsSortOrder, setDumpRowsSortOrder] = React.useState<DumpRowsSortOrder>("desc")
+  const [dumpStatusSortPreference, setDumpStatusSortPreference] = React.useState<DumpStatusSortPreference>("dumped_first")
   const [dumpUploadState, setDumpUploadState] = React.useState<"idle" | "uploading" | "done" | "failed">("idle")
   const [dumpUploadRequestId, setDumpUploadRequestId] = React.useState<string | null>(null)
   const [showStartLoader, setShowStartLoader] = React.useState(false)
@@ -787,6 +792,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const sseRetryTimer = React.useRef<number | null>(null)
   const sseConnectionState = React.useRef<'idle' | 'connecting' | 'connected'>('idle')
   const sseConnectionId = React.useRef<number>(0)
+  const hiddenDisconnectTimerRef = React.useRef<number | null>(null)
+  const autoDisconnectedByHiddenRef = React.useRef(false)
   const lastEventIdRef = React.useRef<string>("")
   const taskDoneToastShown = React.useRef<boolean>(false)
   const statsCacheTimerRef = React.useRef<number | null>(null)
@@ -804,6 +811,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   
   // Cache key for localStorage
   const CACHE_KEY = `task_stats_${id}`
+  const DUMP_SORT_PREF_KEY = `task_dump_sort_pref_${id}`
   
   // Data storage
   const [tableData, setTableData] = React.useState<TableRowData[]>([])
@@ -1463,6 +1471,10 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         clearTimeout(statsFlushTimerRef.current)
         statsFlushTimerRef.current = null
       }
+      if (hiddenDisconnectTimerRef.current) {
+        clearTimeout(hiddenDisconnectTimerRef.current)
+        hiddenDisconnectTimerRef.current = null
+      }
     }
   }, [flushResultsCacheNow, flushStatsCacheNow])
 
@@ -1587,12 +1599,51 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
   }, [sseEtaSeconds])
 
-  // Handle visibility change - keep connection alive when switching tabs
+  // If tab stays hidden > 60s, disconnect stream to reduce memory/cpu.
+  // Reconnect and reload fresh data when user returns.
   React.useEffect(() => {
+    const clearHiddenDisconnectTimer = () => {
+      if (hiddenDisconnectTimerRef.current) {
+        clearTimeout(hiddenDisconnectTimerRef.current)
+        hiddenDisconnectTimerRef.current = null
+      }
+    }
+
+    const disconnectForLongHidden = () => {
+      if (!document.hidden) return
+      autoDisconnectedByHiddenRef.current = true
+      sseConnectionState.current = "idle"
+      setSseUiStatus("idle")
+
+      if (sseRetryTimer.current) {
+        clearTimeout(sseRetryTimer.current)
+        sseRetryTimer.current = null
+      }
+
+      if (sseAbortController.current) {
+        sseAbortController.current.abort()
+        sseAbortController.current = null
+      }
+
+      console.log("[SSE] ⏸️ Hidden for 60s, stream disconnected")
+    }
+
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        console.log('[SSE] Tab hidden - keeping connection alive')
+        clearHiddenDisconnectTimer()
+        hiddenDisconnectTimerRef.current = window.setTimeout(() => {
+          disconnectForLongHidden()
+        }, HIDDEN_DISCONNECT_AFTER_MS)
+        console.log("[SSE] Tab hidden, disconnect timer started")
       } else {
+        clearHiddenDisconnectTimer()
+        if (autoDisconnectedByHiddenRef.current) {
+          autoDisconnectedByHiddenRef.current = false
+          console.log("[SSE] 🔄 Tab resumed after long hidden, reloading task data")
+          void fetchTaskData(true)
+          return
+        }
+
         console.log('[SSE] Tab visible - connection still active')
         if (sseConnectionState.current === 'idle') {
           console.log('[SSE] 🔄 Reconnecting on tab visible')
@@ -1602,7 +1653,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     }
 
     const handleOnline = () => {
-      if (sseConnectionState.current === 'idle') {
+      if (sseConnectionState.current === 'idle' && !document.hidden) {
         console.log('[SSE] 🌐 Network online, reconnecting SSE')
         connectSSE()
       }
@@ -1612,10 +1663,11 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     window.addEventListener('online', handleOnline)
 
     return () => {
+      clearHiddenDisconnectTimer()
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('online', handleOnline)
     }
-  }, [])
+  }, [HIDDEN_DISCONNECT_AFTER_MS])
 
   // SSE connection function with retry
 	  const connectSSE = async () => {
@@ -2796,8 +2848,9 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      waf: false,
 	    }))
 	  }, [sseInjectionRows, tableData])
+  const deferredInjectionRows = React.useDeferredValue(injectionRows)
   const sortedInjectionRows = React.useMemo(() => {
-    const rows = [...injectionRows]
+    const rows = [...deferredInjectionRows]
     rows.sort((a, b) => {
       if (injectionSortBy === "domain") {
         return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
@@ -2814,7 +2867,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
     })
     return rows
-  }, [injectionRows, injectionSortBy])
+  }, [deferredInjectionRows, injectionSortBy])
 	  const dumpRows = React.useMemo(() => {
       if (sseDumpRows.length > 0) return sseDumpRows
 	    return tableData.map((row) => ({
@@ -2829,8 +2882,9 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      percentDone: row.status === "complete" ? 100 : 0,
 	    }))
 	  }, [sseDumpRows, tableData])
+  const deferredDumpRows = React.useDeferredValue(dumpRows)
   const sortedDumpRows = React.useMemo(() => {
-    const rows = [...dumpRows]
+    const rows = [...deferredDumpRows]
     rows.sort((a, b) => {
       if (dumpSortBy === "domain") {
         return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
@@ -2848,13 +2902,72 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
       }
 
-      const statusRank = (status: "dumped" | "progress") => (status === "dumped" ? 0 : 1)
-      const statusCmp = statusRank(a.statusKind) - statusRank(b.statusKind)
+      if (dumpSortBy === "rows") {
+        if (a.rows !== b.rows) {
+          return dumpRowsSortOrder === "asc" ? a.rows - b.rows : b.rows - a.rows
+        }
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+      }
+
+      const dumpedFirstRank = (status: "dumped" | "progress") => (status === "dumped" ? 0 : 1)
+      const progressFirstRank = (status: "dumped" | "progress") => (status === "progress" ? 0 : 1)
+      const rank = dumpStatusSortPreference === "dumped_first" ? dumpedFirstRank : progressFirstRank
+      const statusCmp = rank(a.statusKind) - rank(b.statusKind)
       if (statusCmp !== 0) return statusCmp
       return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
     })
     return rows
-  }, [dumpRows, dumpSortBy])
+  }, [deferredDumpRows, dumpRowsSortOrder, dumpSortBy, dumpStatusSortPreference])
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const raw = window.localStorage.getItem(DUMP_SORT_PREF_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as {
+        by?: DumpSortBy
+        rowsOrder?: DumpRowsSortOrder
+        statusPreference?: DumpStatusSortPreference
+      }
+      if (parsed.by && ["domain", "country", "category", "rows", "status"].includes(parsed.by)) {
+        setDumpSortBy(parsed.by)
+      }
+      if (parsed.rowsOrder === "asc" || parsed.rowsOrder === "desc") {
+        setDumpRowsSortOrder(parsed.rowsOrder)
+      }
+      if (parsed.statusPreference === "dumped_first" || parsed.statusPreference === "progress_first") {
+        setDumpStatusSortPreference(parsed.statusPreference)
+      }
+    } catch {
+      // ignore invalid local cache
+    }
+  }, [DUMP_SORT_PREF_KEY])
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        DUMP_SORT_PREF_KEY,
+        JSON.stringify({
+          by: dumpSortBy,
+          rowsOrder: dumpRowsSortOrder,
+          statusPreference: dumpStatusSortPreference,
+        })
+      )
+    } catch {
+      // ignore localStorage write failures
+    }
+  }, [DUMP_SORT_PREF_KEY, dumpRowsSortOrder, dumpSortBy, dumpStatusSortPreference])
+  const injectionRenderLimit = taskStatus === "running" || taskStatus === "running_recon" ? 200 : 1000
+  const dumpRenderLimit = taskStatus === "running" || taskStatus === "running_recon" ? 200 : 1000
+  const renderedInjectionRows = React.useMemo(
+    () => sortedInjectionRows.slice(0, injectionRenderLimit),
+    [injectionRenderLimit, sortedInjectionRows]
+  )
+  const renderedDumpRows = React.useMemo(
+    () => sortedDumpRows.slice(0, dumpRenderLimit),
+    [dumpRenderLimit, sortedDumpRows]
+  )
   const wafDetected = sseWafDetected
 	  const categoryColorMap = React.useMemo(
 	    () => ({
@@ -3365,8 +3478,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                              </TableCell>
 	                            </TableRow>
 	                          ))
-		                        ) : hasInjectionRows ? (
-		                          sortedInjectionRows.map((item) => (
+	                        ) : hasInjectionRows ? (
+	                          renderedInjectionRows.map((item) => (
 		                            <TableRow key={item.key} className="hover:bg-transparent">
 		                              <TableCell className="font-medium">
 		                                <div className="flex min-w-0 items-center gap-2">
@@ -3416,7 +3529,9 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 		                                ) : (
 		                                  <span>All history loaded</span>
 		                                )}
-		                                <span className="font-mono">{sortedInjectionRows.length.toLocaleString()} shown</span>
+		                                <span className="font-mono">
+                                      {renderedInjectionRows.length.toLocaleString()} / {sortedInjectionRows.length.toLocaleString()} shown
+                                    </span>
 		                              </div>
 		                            </TableCell>
 		                          </TableRow>
@@ -3506,12 +3621,48 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                               Category (A-Z)
                             </DropdownMenuCheckboxItem>
                             <DropdownMenuCheckboxItem
-                              checked={dumpSortBy === "status"}
+                              checked={dumpSortBy === "rows" && dumpRowsSortOrder === "desc"}
                               onCheckedChange={(checked) => {
-                                if (checked) setDumpSortBy("status")
+                                if (checked) {
+                                  setDumpSortBy("rows")
+                                  setDumpRowsSortOrder("desc")
+                                }
                               }}
                             >
-                              Status
+                              Rows (High-Low)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "rows" && dumpRowsSortOrder === "asc"}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setDumpSortBy("rows")
+                                  setDumpRowsSortOrder("asc")
+                                }
+                              }}
+                            >
+                              Rows (Low-High)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "status" && dumpStatusSortPreference === "dumped_first"}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setDumpSortBy("status")
+                                  setDumpStatusSortPreference("dumped_first")
+                                }
+                              }}
+                            >
+                              Status (Dumped first)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "status" && dumpStatusSortPreference === "progress_first"}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setDumpSortBy("status")
+                                  setDumpStatusSortPreference("progress_first")
+                                }
+                              }}
+                            >
+                              Status (Progress first)
                             </DropdownMenuCheckboxItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -3571,7 +3722,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                            </TableRow>
 	                          ))
 	                        ) : hasDumpRows ? (
-	                          sortedDumpRows.map((item) => (
+	                          renderedDumpRows.map((item) => (
 	                            <TableRow key={item.key} className="hover:bg-transparent">
 	                              <TableCell className="font-medium">
                                   <div className="flex min-w-0 items-center gap-2">

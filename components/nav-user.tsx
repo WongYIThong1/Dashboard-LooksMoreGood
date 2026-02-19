@@ -77,6 +77,13 @@ interface UserSettings {
   privacy: boolean
 }
 
+function normalizePlan(plan: unknown): "Free" | "Pro" | "Pro+" {
+  const value = typeof plan === "string" ? plan.trim().toLowerCase() : ""
+  if (value === "pro+" || value === "pro plus" || value === "pro_plus") return "Pro+"
+  if (value === "pro") return "Pro"
+  return "Free"
+}
+
 export function NavUser() {
   const router = useRouter()
   const { isMobile } = useSidebar()
@@ -102,7 +109,7 @@ export function NavUser() {
             id: cached.id || '',
             username: cached.username,
             email: cached.email,
-            plan: cached.plan || 'Free',
+            plan: normalizePlan(cached.plan),
             avatarUrl: cached.avatarUrl,
             avatarHash: cached.avatarHash,
           })
@@ -124,7 +131,7 @@ export function NavUser() {
 
           const username = profile?.username || user.email?.split('@')[0] || 'User'
           const email = user.email || 'user@example.com'
-          const plan = profile?.plan || 'Free'
+          const plan = normalizePlan(profile?.plan)
 
           setUser({
             id: user.id,
@@ -187,7 +194,7 @@ export function NavUser() {
           setSettings({
             username: profile.username || 'User',
             email: profile.email || user.email || 'user@example.com',
-            plan: profile.plan || 'Free',
+            plan: normalizePlan(profile.plan),
             credits: profile.credits || 0,
             notification: profile.system_notification,
             privacy: profile.privacy_mode,
@@ -435,7 +442,7 @@ export function NavUser() {
                       <Label htmlFor="plan">Plan</Label>
                       <Input 
                         id="plan" 
-                        value={settings?.plan || "free"} 
+                        value={settings?.plan || "Free"} 
                         disabled 
                         className="bg-muted capitalize" 
                       />

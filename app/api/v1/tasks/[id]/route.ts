@@ -73,7 +73,30 @@ export async function GET(
 
     const { data: task, error: taskError } = await supabase
       .from("tasks")
-      .select("*")
+      .select(
+        `
+        id,
+        name,
+        status,
+        file_id,
+        target,
+        ai_mode,
+        auto_dumper,
+        preset,
+        parameter_risk_filter,
+        ai_sensitivity_level,
+        response_pattern_drift,
+        baseline_profiling,
+        structural_change_detection,
+        injection_union,
+        injection_error,
+        injection_boolean,
+        injection_timebased,
+        created_at,
+        updated_at,
+        started_at
+      `
+      )
       .eq("id", taskId)
       .eq("user_id", user.id)
       .single()

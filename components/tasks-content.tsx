@@ -397,6 +397,7 @@ export function TasksContent() {
   const [antiBanEngine, setAntiBanEngine] = React.useState(false)
   const [payloadEngine, setPayloadEngine] = React.useState(false)
   const antiBanAvailable = false
+  const payloadEngineAvailable = false
 
   // Injection Settings
   const [injectionUnion, setInjectionUnion] = React.useState(true)
@@ -897,7 +898,7 @@ export function TasksContent() {
           response_pattern_drift: responsePatternDrift,
           structural_change_detection: structuralChangeDetection,
           anti_ban_engine: antiBanAvailable ? antiBanEngine : false,
-          payload_engine: payloadEngine,
+          payload_engine: payloadEngineAvailable ? payloadEngine : false,
           injection_union: injectionUnion,
           injection_error: injectionError,
           injection_boolean: injectionBoolean,
@@ -1471,14 +1472,15 @@ export function TasksContent() {
                           <Label htmlFor="payload-engine" className="cursor-pointer text-sm flex items-center gap-2">
                             <IconSparkles className="size-4 text-muted-foreground" />
                             Payload engine
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Currently unavailable</Badge>
                           </Label>
-                          <div className="text-xs text-muted-foreground">Expands payload generation depth and variation. No credits cost.</div>
+                          <div className="text-xs text-muted-foreground">Temporarily unavailable in current version.</div>
                         </div>
                         <Switch
                           id="payload-engine"
-                          checked={payloadEngine}
+                          checked={payloadEngineAvailable ? payloadEngine : false}
                           onCheckedChange={setPayloadEngine}
-                          disabled={isCreating}
+                          disabled
                         />
                       </div>
                     </div>

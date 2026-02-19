@@ -35,6 +35,13 @@ interface UserSettings {
   is_expired?: boolean
 }
 
+function normalizePlan(plan: unknown): "Free" | "Pro" | "Pro+" {
+  const value = typeof plan === "string" ? plan.trim().toLowerCase() : ""
+  if (value === "pro+" || value === "pro plus" || value === "pro_plus") return "Pro+"
+  if (value === "pro") return "Pro"
+  return "Free"
+}
+
 export function SettingsContent() {
   const [settings, setSettings] = React.useState<UserSettings | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
@@ -82,7 +89,7 @@ export function SettingsContent() {
       setSettings({
         username: data.username,
         email: data.email,
-        plan: data.plan,
+        plan: normalizePlan(data.plan),
         credits: data.credits,
         notification: data.notification,
         privacy: data.privacy,

@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server"
-import sharp from "sharp"
 import { createClient } from "@/lib/supabase/server"
 import {
   createRequestId,
@@ -73,6 +72,8 @@ export async function GET(
     }
 
     const buffer = Buffer.from(await fileData.arrayBuffer())
+    const sharpModule = await import("sharp")
+    const sharp = sharpModule.default
     const processedImage = await sharp(buffer)
       .resize(size, size, { fit: "cover", position: "center" })
       .webp({ quality: 85, effort: 4 })
@@ -90,4 +91,3 @@ export async function GET(
     return internalErrorResponse(requestId, "api/avatar/proxy", error)
   }
 }
-
