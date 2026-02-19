@@ -766,7 +766,7 @@ export function TasksContent() {
       setInjectionTimebased(false)
       // Some backends close user SSE after task creation; force a clean reconnect.
       setUserSseReconnectNonce((prev) => prev + 1)
-      router.refresh()
+      void refreshTasksInBackground()
     } catch (error) {
       console.error('Create task error:', error)
       toast.error(error instanceof Error ? error.message : "Failed to create task")

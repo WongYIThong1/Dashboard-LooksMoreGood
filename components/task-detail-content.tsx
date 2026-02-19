@@ -45,6 +45,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -132,6 +133,9 @@ interface TaskSettings {
 interface TaskDetailContentProps {
   id: string
 }
+
+type DumpSortBy = "domain" | "country" | "category" | "status"
+type InjectionSortBy = "domain" | "country" | "category"
 
 interface StatsSSEPayload {
   type?: string
@@ -397,6 +401,18 @@ function mapUrlStatus(apiStatus: string): "complete" | "dumping" | "failed" | "q
 }
 
 const isDev = process.env.NODE_ENV !== "production"
+const SSE_DEBUG_LOGS = process.env.NEXT_PUBLIC_SSE_DEBUG === "1"
+const PERF_MONITOR_ENABLED = process.env.NEXT_PUBLIC_PERF_MONITOR === "1"
+
+function sseDebugLog(...args: unknown[]) {
+  if (!SSE_DEBUG_LOGS) return
+  console.log(...args)
+}
+
+function perfWarn(...args: unknown[]) {
+  if (!PERF_MONITOR_ENABLED) return
+  console.warn(...args)
+}
 
 // Format credits number to k/M format
 function formatCredits(num: number): string {
@@ -748,8 +764,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
   const [isStarting, setIsStarting] = React.useState(false)
   const [isDownloadingInjection, setIsDownloadingInjection] = React.useState(false)
-  const [injectionSortOrder, setInjectionSortOrder] = React.useState<"asc" | "desc">("desc")
-  const [dumpSortOrder, setDumpSortOrder] = React.useState<"asc" | "desc">("desc")
+  const [injectionSortBy, setInjectionSortBy] = React.useState<InjectionSortBy>("category")
+  const [dumpSortBy, setDumpSortBy] = React.useState<DumpSortBy>("domain")
   const [dumpUploadState, setDumpUploadState] = React.useState<"idle" | "uploading" | "done" | "failed">("idle")
   const [dumpUploadRequestId, setDumpUploadRequestId] = React.useState<string | null>(null)
   const [showStartLoader, setShowStartLoader] = React.useState(false)
@@ -779,6 +795,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const resultsCacheTimerRef = React.useRef<number | null>(null)
   const pendingResultsCacheRef = React.useRef<InjectionCacheRow[] | null>(null)
   const activeDumpRequestIdRef = React.useRef<string | null>(null)
+  const pendingStatsPayloadRef = React.useRef<Partial<StatsSSEPayload> | null>(null)
+  const statsFlushTimerRef = React.useRef<number | null>(null)
 
   // SSE UI state (ref is not reactive).
   const [sseUiStatus, setSseUiStatus] = React.useState<'idle' | 'connecting' | 'connected' | 'error'>('idle')
@@ -1441,8 +1459,97 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         clearInterval(etaIntervalRef.current)
         etaIntervalRef.current = null
       }
+      if (statsFlushTimerRef.current) {
+        clearTimeout(statsFlushTimerRef.current)
+        statsFlushTimerRef.current = null
+      }
     }
   }, [flushResultsCacheNow, flushStatsCacheNow])
+
+  // Optional performance monitor for UI stutter diagnostics.
+  // Enable with NEXT_PUBLIC_PERF_MONITOR=1.
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    if (!PERF_MONITOR_ENABLED) return
+    if (typeof PerformanceObserver === "undefined") return
+
+    const observers: PerformanceObserver[] = []
+    const supports = PerformanceObserver.supportedEntryTypes || []
+
+    let longTaskCount = 0
+    let longTaskTotal = 0
+    let longTaskMax = 0
+    let longFrameCount = 0
+    let longFrameMax = 0
+
+    const summaryTimer = window.setInterval(() => {
+      if (longTaskCount === 0 && longFrameCount === 0) return
+      perfWarn("[PerfMonitor] 5s summary", {
+        taskId: id,
+        longTaskCount,
+        longTaskTotalMs: Math.round(longTaskTotal),
+        longTaskMaxMs: Math.round(longTaskMax),
+        longFrameCount,
+        longFrameMaxMs: Math.round(longFrameMax),
+      })
+      longTaskCount = 0
+      longTaskTotal = 0
+      longTaskMax = 0
+      longFrameCount = 0
+      longFrameMax = 0
+    }, 5000)
+
+    if (supports.includes("longtask")) {
+      const longTaskObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          longTaskCount += 1
+          longTaskTotal += entry.duration
+          if (entry.duration > longTaskMax) longTaskMax = entry.duration
+        }
+      })
+      longTaskObserver.observe({ type: "longtask", buffered: true })
+      observers.push(longTaskObserver)
+    }
+
+    // Chromium provides this for rendering jank diagnostics.
+    if (supports.includes("long-animation-frame")) {
+      const longFrameObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          longFrameCount += 1
+          if (entry.duration > longFrameMax) longFrameMax = entry.duration
+        }
+      })
+      longFrameObserver.observe({ type: "long-animation-frame", buffered: true } as PerformanceObserverInit)
+      observers.push(longFrameObserver)
+    }
+
+    if (supports.includes("event")) {
+      const eventObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration >= 120) {
+            perfWarn("[PerfMonitor] slow interaction", {
+              taskId: id,
+              name: entry.name,
+              durationMs: Math.round(entry.duration),
+              startTimeMs: Math.round(entry.startTime),
+            })
+          }
+        }
+      })
+      eventObserver.observe({ type: "event", buffered: true, durationThreshold: 120 })
+      observers.push(eventObserver)
+    }
+
+    perfWarn("[PerfMonitor] enabled", {
+      taskId: id,
+      supportedEntryTypes: supports,
+    })
+
+    return () => {
+      window.clearInterval(summaryTimer)
+      for (const observer of observers) observer.disconnect()
+    }
+  }, [id])
 
   // Local ETA countdown so the label keeps moving between stats updates.
   React.useEffect(() => {
@@ -1593,11 +1700,11 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         return
       }
 
-      console.log('[SSE] ✅ Connected successfully, starting to read stream...')
+      sseDebugLog('[SSE] ✅ Connected successfully, starting to read stream...')
 
       // Read stream
       const readStream = async () => {
-        console.log('[SSE] 📖 Starting stream reader loop')
+        sseDebugLog('[SSE] 📖 Starting stream reader loop')
         let currentEvent = ''
         let currentEventId = ''
         let currentDataLines: string[] = []
@@ -1611,7 +1718,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
           if (!rawData) {
             if (currentEvent) {
-              console.log(`[SSE] ℹ️ Event "${fallbackEvent}" finished without data payload`)
+              sseDebugLog(`[SSE] ℹ️ Event "${fallbackEvent}" finished without data payload`)
             }
             currentEvent = ''
             currentEventId = ''
@@ -1620,7 +1727,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           }
 
           messageCount += 1
-          console.log(`[SSE] 📨 Dispatch #${messageCount}:`, {
+          sseDebugLog(`[SSE] 📨 Dispatch #${messageCount}:`, {
             event: fallbackEvent,
             rawLength: rawData.length,
             rawData,
@@ -1639,20 +1746,28 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 })
               }
             }
-            console.log(`[SSE] 📊 Parsed #${messageCount}:`, {
+            sseDebugLog(`[SSE] 📊 Parsed #${messageCount}:`, {
               type: eventType,
               taskid: parsed.taskid,
               eventId: currentEventId || parsed.event_id,
             })
             
             if (eventType === 'connected') {
-              console.log('[SSE] 🔌 Connection confirmed:', parsed)
+              sseDebugLog('[SSE] 🔌 Connection confirmed:', parsed)
             } else if (eventType === 'stats') {
               statsMessageCount += 1
               const stats = parsed as StatsSSEPayload
-              applyStatsPayload(stats)
+              pendingStatsPayloadRef.current = stats
+              if (statsFlushTimerRef.current === null) {
+                statsFlushTimerRef.current = window.setTimeout(() => {
+                  statsFlushTimerRef.current = null
+                  const queuedPayload = pendingStatsPayloadRef.current
+                  pendingStatsPayloadRef.current = null
+                  if (queuedPayload) applyStatsPayload(queuedPayload)
+                }, 120)
+              }
 
-              console.log(`[SSE] ✅ Stats applied (#${statsMessageCount})`, {
+              sseDebugLog(`[SSE] ✅ Stats queued (#${statsMessageCount})`, {
                 progress: `${stats.websites_done ?? 0}/${stats.websites_total ?? 0}`,
                 success: stats.success ?? 0,
                 failed: stats.failed ?? 0,
@@ -1682,39 +1797,41 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 }
               }
 	              if (items.length > 0) {
-	                setInjectionHydrated(true)
-	                setSseInjectionRows((prev) => {
-	                  const incomingRows = items
-	                    .filter((item) => item.domain && item.domain.trim().length > 0)
-	                    .map((item, idx) => ({
-	                      key: `${currentEventId || Date.now()}-${idx}-${item.domain}`,
-	                      domain: (item.domain || "-").trim(),
-	                      country: (item.country || "-").trim() || "-",
-	                      category: (item.category || "-").trim() || "-",
-	                      // WAF badge is driven by waftech presence.
-	                      waf: typeof item.waftech === "string" && item.waftech.trim().length > 0,
-	                    }))
+                  React.startTransition(() => {
+	                  setInjectionHydrated(true)
+	                  setSseInjectionRows((prev) => {
+	                    const incomingRows = items
+	                      .filter((item) => item.domain && item.domain.trim().length > 0)
+	                      .map((item, idx) => ({
+	                        key: `${currentEventId || Date.now()}-${idx}-${item.domain}`,
+	                        domain: (item.domain || "-").trim(),
+	                        country: (item.country || "-").trim() || "-",
+	                        category: (item.category || "-").trim() || "-",
+	                        // WAF badge is driven by waftech presence.
+	                        waf: typeof item.waftech === "string" && item.waftech.trim().length > 0,
+	                      }))
 
-	                  const merged = [...incomingRows, ...prev]
-	                  const indexBySig = new Map<string, number>()
-	                  const deduped: typeof merged = []
-	                  for (const row of merged) {
-	                    const sig = `${row.domain}|${row.country}|${row.category}`
-	                    const existingIndex = indexBySig.get(sig)
-	                    if (existingIndex !== undefined) {
-	                      continue
+	                    const merged = [...incomingRows, ...prev]
+	                    const indexBySig = new Map<string, number>()
+	                    const deduped: typeof merged = []
+	                    for (const row of merged) {
+	                      const sig = `${row.domain}|${row.country}|${row.category}`
+	                      const existingIndex = indexBySig.get(sig)
+	                      if (existingIndex !== undefined) {
+	                        continue
+	                      }
+	                      indexBySig.set(sig, deduped.length)
+	                      deduped.push(row)
+	                      if (deduped.length >= INJECTION_WINDOW_LIMIT) break
 	                    }
-	                    indexBySig.set(sig, deduped.length)
-	                    deduped.push(row)
-	                    if (deduped.length >= INJECTION_WINDOW_LIMIT) break
-	                  }
-	                  const nextRows = deduped
-	                  queueResultsCacheSave(nextRows)
-	                  return nextRows
-	                })
+	                    const nextRows = deduped
+	                    queueResultsCacheSave(nextRows)
+	                    return nextRows
+	                  })
+                  })
 	              }
 
-	              console.log('[SSE] ✅ results_batch applied:', {
+	              sseDebugLog('[SSE] ✅ results_batch applied:', {
 	                received: items.length,
                   credits: batch.credits,
 	              })
@@ -1728,13 +1845,14 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 setSseDumpedCount(Math.max(0, Math.trunc(payload.dumped)))
               }
               if (domains.length > 0) {
-                setDumpsHydrated(true)
-                setSseDumpRows((prev) => {
-                  const nowKey = currentEventId || Date.now().toString()
-                  const incoming = normalizeDumpRowsFromDomains(domains, nowKey)
+                React.startTransition(() => {
+                  setDumpsHydrated(true)
+                  setSseDumpRows((prev) => {
+                    const nowKey = currentEventId || Date.now().toString()
+                    const incoming = normalizeDumpRowsFromDomains(domains, nowKey)
 
-                  if (process.env.NODE_ENV !== "production") {
-                    console.log("[SSE][dumper_stats] rows computed:", {
+                  if (process.env.NODE_ENV !== "production" && SSE_DEBUG_LOGS) {
+                    sseDebugLog("[SSE][dumper_stats] rows computed:", {
                       eventId: currentEventId,
                       preset: payload.preset,
                       dumped: payload.dumped,
@@ -1779,8 +1897,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                     setSseDumpCount(deduped.length)
                   }
 
-                  if (process.env.NODE_ENV !== "production") {
-                    console.log("[SSE][dumper_stats] state after merge:", {
+                  if (process.env.NODE_ENV !== "production" && SSE_DEBUG_LOGS) {
+                    sseDebugLog("[SSE][dumper_stats] state after merge:", {
                       eventId: currentEventId,
                       totalRows: deduped.length,
                       dumpedFromRows,
@@ -1793,11 +1911,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                     })
                   }
 
-                  return deduped
+                    return deduped
+                  })
                 })
               }
 
-              console.log("[SSE] ✅ dumper_stats applied:", {
+              sseDebugLog("[SSE] ✅ dumper_stats applied:", {
                 dump: payload.dump,
                 received: domains.length,
                 dumped: payload.dumped,
@@ -1901,13 +2020,13 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
               setTaskDoneReceived(true)
               setLoaderIsDone(true)
               setShowStartLoader(false)
-              console.log("[SSE] ✅ task_done applied:", {
+              sseDebugLog("[SSE] ✅ task_done applied:", {
                 taskid: payload.taskid,
                 status: payload.status,
                 final,
               })
             } else {
-              console.log('[SSE] 📴 Message ignored:', eventType)
+              sseDebugLog('[SSE] 📴 Message ignored:', eventType)
             }
           } catch (e) {
             console.error('[SSE] ❌ JSON parse error:', e, {
@@ -1927,18 +2046,18 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             
             if (done) {
               if (sseBuffer.trim().length > 0) {
-                console.log('[SSE] ⚠️ Stream ended with partial buffer:', sseBuffer)
+                sseDebugLog('[SSE] ⚠️ Stream ended with partial buffer:', sseBuffer)
               }
               if (currentDataLines.length > 0 || currentEvent) {
-                console.log('[SSE] ⚠️ Stream ended before blank line delimiter, forcing dispatch')
+                sseDebugLog('[SSE] ⚠️ Stream ended before blank line delimiter, forcing dispatch')
                 dispatchSSEEvent()
               }
-              console.log('[SSE] 🏁 Stream ended')
+              sseDebugLog('[SSE] 🏁 Stream ended')
               break
             }
 
             const chunk = decoder.decode(value, { stream: true })
-            console.log('[SSE] 📦 Received chunk, length:', chunk.length)
+            sseDebugLog('[SSE] 📦 Received chunk, length:', chunk.length)
             sseBuffer += chunk
 
             let lineBreakIndex = sseBuffer.indexOf('\n')
@@ -1949,20 +2068,20 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 
               if (line.startsWith('event:')) {
                 currentEvent = line.slice(6).trim()
-                console.log('[SSE] 🏷️ Event type:', currentEvent)
+                sseDebugLog('[SSE] 🏷️ Event type:', currentEvent)
               } else if (line.startsWith('id:')) {
                 currentEventId = line.slice(3).trim()
-                console.log('[SSE] 🆔 Event id:', currentEventId)
+                sseDebugLog('[SSE] 🆔 Event id:', currentEventId)
               } else if (line.startsWith('data:')) {
                 const data = line.slice(5).trimStart()
                 currentDataLines.push(data)
-                console.log('[SSE] 🧩 Data line captured:', data)
+                sseDebugLog('[SSE] 🧩 Data line captured:', data)
               } else if (line === '') {
                 dispatchSSEEvent()
               } else if (line.startsWith(':')) {
-                console.log('[SSE] 💓 Heartbeat/comment:', line)
+                sseDebugLog('[SSE] 💓 Heartbeat/comment:', line)
               } else if (line.trim()) {
-                console.log('[SSE] 📝 Unknown SSE line:', line)
+                sseDebugLog('[SSE] 📝 Unknown SSE line:', line)
               }
 
               lineBreakIndex = sseBuffer.indexOf('\n')
@@ -1970,7 +2089,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
           }
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
-            console.log('[SSE] 🛑 Connection aborted by user/system')
+            sseDebugLog('[SSE] 🛑 Connection aborted by user/system')
             if (connectionId === sseConnectionId.current) {
               sseConnectionState.current = 'idle'
             }
@@ -1983,12 +2102,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             }
           }
         } finally {
-          console.log('[SSE] 🔒 Releasing reader lock')
+          sseDebugLog('[SSE] 🔒 Releasing reader lock')
           reader.releaseLock()
           
           // If stream ended normally (not aborted), try to reconnect
           if (connectionId === sseConnectionId.current && !localController.signal.aborted) {
-            console.log('[SSE] 🔄 Stream ended, attempting reconnect')
+            sseDebugLog('[SSE] 🔄 Stream ended, attempting reconnect')
             sseConnectionState.current = 'idle'
             scheduleSSERetry(connectionId)
           }
@@ -1998,7 +2117,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
       readStream()
 	    } catch (error) {
 	      if (error instanceof Error && error.name === 'AbortError') {
-	        console.log('[SSE] 🛑 Connection aborted during setup')
+	        sseDebugLog('[SSE] 🛑 Connection aborted during setup')
 	        if (connectionId === sseConnectionId.current) {
 	          sseConnectionState.current = 'idle'
 	          setSseUiStatus('idle')
@@ -2173,7 +2292,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	    const categoryData =
 	      payload.category && typeof payload.category === "object" ? payload.category : {}
 
-	    console.log("[Stats] ✅ applyStatsPayload:", {
+	    sseDebugLog("[Stats] ✅ applyStatsPayload:", {
 	      websites_total: payload.websites_total,
 	      websites_done: payload.websites_done,
 	      success: payload.success,
@@ -2188,25 +2307,27 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	      lastEventId: lastEventIdRef.current,
 	    })
 
-	    setProgress({
-	      current: Math.max(0, done),
-	      target: Math.max(0, total),
-	    })
-    setSseSuccess(Math.max(0, success))
-    setSseFailed(Math.max(0, failed))
-    setSseWafDetected(Math.max(0, wafDetected))
-    if (typeof credits === "number" && Number.isFinite(credits)) {
-      const nextCredits = Math.max(0, Math.trunc(credits))
-      setCreditsUsed((prev) => (nextCredits > prev ? nextCredits : prev))
-    }
-    setSseRps(Math.max(0, rps))
-    setSseWpm(Math.max(0, wpm))
-    setSseEtaSeconds(Math.max(0, etaSeconds))
-    setSseRpsHistory(rpsHistory)
-	    setSseWpmHistory(wpmHistory)
-	    setSseCategory(categoryData)
-    setSseDumpCount(Math.max(0, Math.trunc(Number.isFinite(dump) ? dump : 0)))
-    setSseDumpedCount(Math.max(0, Math.trunc(Number.isFinite(dumped) ? dumped : 0)))
+      React.startTransition(() => {
+	      setProgress({
+	        current: Math.max(0, done),
+	        target: Math.max(0, total),
+	      })
+      setSseSuccess(Math.max(0, success))
+      setSseFailed(Math.max(0, failed))
+      setSseWafDetected(Math.max(0, wafDetected))
+      if (typeof credits === "number" && Number.isFinite(credits)) {
+        const nextCredits = Math.max(0, Math.trunc(credits))
+        setCreditsUsed((prev) => (nextCredits > prev ? nextCredits : prev))
+      }
+      setSseRps(Math.max(0, rps))
+      setSseWpm(Math.max(0, wpm))
+      setSseEtaSeconds(Math.max(0, etaSeconds))
+      setSseRpsHistory(rpsHistory)
+	      setSseWpmHistory(wpmHistory)
+	      setSseCategory(categoryData)
+      setSseDumpCount(Math.max(0, Math.trunc(Number.isFinite(dump) ? dump : 0)))
+      setSseDumpedCount(Math.max(0, Math.trunc(Number.isFinite(dumped) ? dumped : 0)))
+      })
       const creditsUsedForCache =
         typeof credits === "number" && Number.isFinite(credits)
           ? Math.max(0, Math.trunc(credits))
@@ -2674,20 +2795,22 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const sortedInjectionRows = React.useMemo(() => {
     const rows = [...injectionRows]
     rows.sort((a, b) => {
-      const leftCategory = (a.category || "-").toLowerCase()
-      const rightCategory = (b.category || "-").toLowerCase()
-      const categoryCmp =
-        injectionSortOrder === "asc"
-          ? leftCategory.localeCompare(rightCategory)
-          : rightCategory.localeCompare(leftCategory)
-      if (categoryCmp !== 0) return categoryCmp
+      if (injectionSortBy === "domain") {
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+      }
 
-      const leftDomain = (a.domain || "-").toLowerCase()
-      const rightDomain = (b.domain || "-").toLowerCase()
-      return leftDomain.localeCompare(rightDomain)
+      if (injectionSortBy === "country") {
+        const countryCmp = (a.country || "-").toLowerCase().localeCompare((b.country || "-").toLowerCase())
+        if (countryCmp !== 0) return countryCmp
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+      }
+
+      const categoryCmp = (a.category || "-").toLowerCase().localeCompare((b.category || "-").toLowerCase())
+      if (categoryCmp !== 0) return categoryCmp
+      return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
     })
     return rows
-  }, [injectionRows, injectionSortOrder])
+  }, [injectionRows, injectionSortBy])
 	  const dumpRows = React.useMemo(() => {
       if (sseDumpRows.length > 0) return sseDumpRows
 	    return tableData.map((row) => ({
@@ -2705,13 +2828,29 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const sortedDumpRows = React.useMemo(() => {
     const rows = [...dumpRows]
     rows.sort((a, b) => {
-      if (a.rows !== b.rows) {
-        return dumpSortOrder === "asc" ? a.rows - b.rows : b.rows - a.rows
+      if (dumpSortBy === "domain") {
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
       }
+
+      if (dumpSortBy === "country") {
+        const countryCmp = (a.country || "-").toLowerCase().localeCompare((b.country || "-").toLowerCase())
+        if (countryCmp !== 0) return countryCmp
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+      }
+
+      if (dumpSortBy === "category") {
+        const categoryCmp = (a.category || "-").toLowerCase().localeCompare((b.category || "-").toLowerCase())
+        if (categoryCmp !== 0) return categoryCmp
+        return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
+      }
+
+      const statusRank = (status: "dumped" | "progress") => (status === "dumped" ? 0 : 1)
+      const statusCmp = statusRank(a.statusKind) - statusRank(b.statusKind)
+      if (statusCmp !== 0) return statusCmp
       return (a.domain || "-").toLowerCase().localeCompare((b.domain || "-").toLowerCase())
     })
     return rows
-  }, [dumpRows, dumpSortOrder])
+  }, [dumpRows, dumpSortBy])
   const wafDetected = sseWafDetected
 	  const categoryColorMap = React.useMemo(
 	    () => ({
@@ -3128,15 +3267,44 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	                        </div>
 	                      </div>
 	                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-7"
-                          onClick={() => setInjectionSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
-                          title={injectionSortOrder === "asc" ? "Sort Z-A" : "Sort A-Z"}
-                        >
-                          <IconArrowsSort size={14} />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              title="Sort injection"
+                            >
+                              <IconArrowsSort size={14} />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-52">
+                            <DropdownMenuCheckboxItem
+                              checked={injectionSortBy === "domain"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setInjectionSortBy("domain")
+                              }}
+                            >
+                              Domains (A-Z)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={injectionSortBy === "country"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setInjectionSortBy("country")
+                              }}
+                            >
+                              Country (A-Z)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={injectionSortBy === "category"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setInjectionSortBy("category")
+                              }}
+                            >
+                              Category (A-Z)
+                            </DropdownMenuCheckboxItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -3297,15 +3465,52 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-7"
-                          onClick={() => setDumpSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
-                          title={dumpSortOrder === "asc" ? "Rows high to low" : "Rows low to high"}
-                        >
-                          <IconArrowsSort size={14} />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7"
+                              title="Sort dumps"
+                            >
+                              <IconArrowsSort size={14} />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-52">
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "domain"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setDumpSortBy("domain")
+                              }}
+                            >
+                              Domains (A-Z)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "country"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setDumpSortBy("country")
+                              }}
+                            >
+                              Country (A-Z)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "category"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setDumpSortBy("category")
+                              }}
+                            >
+                              Category (A-Z)
+                            </DropdownMenuCheckboxItem>
+                            <DropdownMenuCheckboxItem
+                              checked={dumpSortBy === "status"}
+                              onCheckedChange={(checked) => {
+                                if (checked) setDumpSortBy("status")
+                              }}
+                            >
+                              Status
+                            </DropdownMenuCheckboxItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                           variant="ghost"
                           size="icon"
