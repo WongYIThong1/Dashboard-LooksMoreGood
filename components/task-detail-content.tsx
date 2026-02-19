@@ -2854,7 +2854,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             <div className="flex items-center gap-2">
               <Badge
                 variant="outline"
-                className="h-8 cursor-default rounded-md border border-zinc-300/70 bg-zinc-100 px-2 text-xs font-semibold text-zinc-800 shadow-xs dark:border-zinc-700 dark:bg-zinc-900/70 dark:text-zinc-100"
+                className="h-8 cursor-default rounded-md border bg-background px-2 text-xs font-semibold text-foreground shadow-xs dark:border-input dark:bg-input/30"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
