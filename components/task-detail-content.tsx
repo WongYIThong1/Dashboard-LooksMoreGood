@@ -2852,6 +2852,31 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
             </div>
 
             <div className="flex items-center gap-2">
+              <Badge
+                variant="outline"
+                className="h-8 cursor-default rounded-md border border-zinc-300/70 bg-zinc-100 px-2 text-xs font-semibold text-zinc-800 shadow-xs dark:border-zinc-700 dark:bg-zinc-900/70 dark:text-zinc-100"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path
+                    fill="none"
+                    d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497zM15 5l4 4"
+                  />
+                </svg>
+                <span>CleanerBot</span>
+                <span className="rounded-sm border border-emerald-800/40 bg-emerald-950/50 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-300">
+                  ON
+                </span>
+              </Badge>
               <Button
                 variant="outline"
                 size="icon"
