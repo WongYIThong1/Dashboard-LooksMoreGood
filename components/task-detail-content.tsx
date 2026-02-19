@@ -2872,7 +2872,7 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                     d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497zM15 5l4 4"
                   />
                 </svg>
-                <span>CleanerBot</span>
+                <span>SmartClean</span>
                 <span className="rounded-sm border border-emerald-800/40 bg-emerald-950/50 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-300">
                   ON
                 </span>
