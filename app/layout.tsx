@@ -4,6 +4,7 @@ import "./globals.css";
 import { NoInspectGuard } from "@/components/no-inspect-guard";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { DashboardFreeBanner } from "@/components/dashboard-free-banner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -95,6 +96,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          <DashboardFreeBanner />
           {children}
           <NoInspectGuard />
           <Toaster position="top-right" duration={3000} />

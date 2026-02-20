@@ -11,6 +11,7 @@ interface CachedUserInfo {
 }
 
 const CACHE_KEY = 'user_info_cache'
+const USER_CACHE_UPDATED_EVENT = "user-info-cache-updated"
 
 export function getCachedUserInfo(): CachedUserInfo | null {
   try {
@@ -45,6 +46,7 @@ export function setCachedUserInfo(data: {
       cachedAt: Date.now(),
     }
     localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
+    window.dispatchEvent(new CustomEvent(USER_CACHE_UPDATED_EVENT))
   } catch (error) {
     console.error('Failed to cache user info:', error)
   }
