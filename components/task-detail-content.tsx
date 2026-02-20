@@ -176,6 +176,11 @@ interface DumperStatsSSEPayload {
   preset?: string
   dump?: number
   dumped?: number
+  target?: number
+  completed?: number
+  running?: number
+  queue?: number
+  progress_percent?: number
   domains?: Array<{
     domain?: string
     country?: string
@@ -581,6 +586,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
   const [sseCategory, setSseCategory] = React.useState<Record<string, number>>({})
   const [sseDumpCount, setSseDumpCount] = React.useState(0)
   const [sseDumpedCount, setSseDumpedCount] = React.useState(0)
+  const [sseDumpQueueCount, setSseDumpQueueCount] = React.useState<number | null>(null)
+  const [sseDumpProgressPercent, setSseDumpProgressPercent] = React.useState<number | null>(null)
   const [sseInjectionRows, setSseInjectionRows] = React.useState<
     Array<{ key: string; domain: string; country: string; category: string; waf?: boolean }>
   >([])
@@ -702,6 +709,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
         const nextDumped = Math.max(0, Math.trunc(payload.dumped))
         setSseDumpedCount((prev) => (nextDumped > prev ? nextDumped : prev))
       }
+      if (typeof payload.queue === "number" && Number.isFinite(payload.queue)) {
+        setSseDumpQueueCount(Math.max(0, Math.trunc(payload.queue)))
+      }
+      if (typeof payload.progress_percent === "number" && Number.isFinite(payload.progress_percent)) {
+        setSseDumpProgressPercent(Math.max(0, Math.min(100, Math.round(payload.progress_percent))))
+      }
 
       if (domains.length > 0) {
         const incoming = normalizeDumpRowsFromDomains(domains, `snapshot-${Date.now()}`)
@@ -820,6 +833,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     setSseInjectionRows([])
     setSseDumpRows([])
     setSseDumpedCount(0)
+    setSseDumpQueueCount(null)
+    setSseDumpProgressPercent(null)
     setDumpUploadState("idle")
     setDumpUploadRequestId(null)
     activeDumpRequestIdRef.current = null
@@ -1900,6 +1915,12 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
               if (typeof payload.dumped === "number" && Number.isFinite(payload.dumped)) {
                 setSseDumpedCount(Math.max(0, Math.trunc(payload.dumped)))
               }
+              if (typeof payload.queue === "number" && Number.isFinite(payload.queue)) {
+                setSseDumpQueueCount(Math.max(0, Math.trunc(payload.queue)))
+              }
+              if (typeof payload.progress_percent === "number" && Number.isFinite(payload.progress_percent)) {
+                setSseDumpProgressPercent(Math.max(0, Math.min(100, Math.round(payload.progress_percent))))
+              }
               if (domains.length > 0) {
                 React.startTransition(() => {
                   setDumpsHydrated(true)
@@ -1976,6 +1997,8 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                 dump: payload.dump,
                 received: domains.length,
                 dumped: payload.dumped,
+                queue: payload.queue,
+                progress_percent: payload.progress_percent,
                 preset: payload.preset,
               })
             } else if (eventType === "dump_file_ready") {
@@ -2282,34 +2305,54 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
     taskDoneToastShown.current = false
 
     try {
-      const response = await fetch(`/api/v1/tasks/${id}/start`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
+      let started = false
+      let lastError: unknown = null
 
-      const data = await response.json().catch(() => null)
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          const response = await fetch(`/api/v1/tasks/${id}/start`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          })
 
-      if (!response.ok || !data?.success) {
-        const apiCode = typeof data?.code === "string" ? data.code : ""
-        const apiMessage =
-          typeof data?.message === "string"
-            ? data.message
-            : typeof data?.error === "string"
-              ? data.error
-              : null
-        const fallback = getHttpErrorMessage(response.status, "Failed to start task")
-        const finalMessage = apiMessage || fallback
-        console.error("[TaskDetail] start rejected", {
-          taskId: id,
-          status: response.status,
-          code: apiCode || "UNKNOWN",
-          requestId: typeof data?.requestId === "string" ? data.requestId : null,
-          message: finalMessage,
-        })
-        toast.error(apiCode ? `${finalMessage} (${apiCode})` : finalMessage)
+          const data = await response.json().catch(() => null)
+          if (response.ok && data?.success) {
+            started = true
+            break
+          }
+
+          const apiCode = typeof data?.code === "string" ? data.code : "UNKNOWN"
+          const apiMessage =
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : getHttpErrorMessage(response.status, "Failed to start task")
+          lastError = new Error(apiMessage)
+          console.error("[TaskDetail] start rejected", {
+            taskId: id,
+            attempt,
+            status: response.status,
+            code: apiCode,
+            requestId: typeof data?.requestId === "string" ? data.requestId : null,
+            message: apiMessage,
+          })
+        } catch (error) {
+          lastError = error
+          console.error("[TaskDetail] start request failed", {
+            taskId: id,
+            attempt,
+            error,
+          })
+        }
+      }
+
+      if (!started) {
+        console.error("[TaskDetail] start failed after retry", { taskId: id, error: lastError })
+        toast.error("Please Try Again")
         return
       }
 
@@ -3005,10 +3048,15 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
 	    }, {} as ChartConfig)
 	  }, [categoryStats])
 	  const categoryTotal = categoryStats.reduce((acc, item) => acc + item.value, 0)
-	  const dumpCountFromRows = dumpRows.length
-	  const dumpedCountFromRows = dumpRows.filter((row) => row.statusKind === "dumped").length
-    const dumpCountDisplay = Math.max(sseDumpCount, dumpCountFromRows)
-    const dumpedCountDisplay = Math.max(sseDumpedCount, dumpedCountFromRows)
+  const dumpCountFromRows = dumpRows.length
+  const dumpedCountFromRows = dumpRows.filter((row) => row.statusKind === "dumped").length
+  const dumpCountDisplay = Math.max(sseDumpCount, dumpCountFromRows)
+  const dumpedCountDisplay = Math.max(sseDumpedCount, dumpedCountFromRows)
+  const dumpsProgressPercentFromCount =
+    dumpCountDisplay > 0 ? Math.min(100, Math.max(0, Math.round((dumpedCountDisplay / dumpCountDisplay) * 100))) : 0
+  const dumpsProgressPercent = sseDumpProgressPercent ?? dumpsProgressPercentFromCount
+  const queueDisplay =
+    sseDumpQueueCount !== null ? sseDumpQueueCount : Math.max(0, dumpCountDisplay - dumpedCountDisplay)
 	  const etaSecondsForDisplay = etaCountdownSeconds !== null && etaCountdownSeconds > 0 ? etaCountdownSeconds : sseEtaSeconds
 	  const etaLabel = etaSecondsForDisplay > 0 ? formatEta(etaSecondsForDisplay) : (progressPercent >= 100 ? "00m 00s" : `${Math.max(1, Math.round((100 - progressPercent) * 0.9))}m`)
 	  const hasInjectionRows = injectionRows.length > 0
@@ -3568,12 +3616,27 @@ export function TaskDetailContent({ id }: TaskDetailContentProps) {
                   <div className="border-b px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="space-y-0.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2.5">
                           <IconBinaryTree className="size-4 text-muted-foreground" />
                           <p className="text-base font-semibold tracking-tight">Dumps</p>
                           <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
                             {dumpCountDisplay}
                           </Badge>
+                          <Badge variant="outline" className="bg-transparent text-[10px] font-mono text-muted-foreground">
+                            Queue {queueDisplay}
+                          </Badge>
+                          {showDumpsSkeleton ? (
+                            <Skeleton className="h-1 w-10 rounded-full" />
+                          ) : (
+                            <div className="ml-1 flex items-center gap-1.5">
+                              <div className="w-20">
+                              <Progress value={dumpsProgressPercent} className="h-1" />
+                              </div>
+                              <span className="text-[10px] font-mono text-muted-foreground">
+                                {dumpsProgressPercent}%
+                              </span>
+                            </div>
+                          )}
                           {dumpUploadState === "uploading" ? (
                             <span className="text-[10px] font-mono text-muted-foreground">Uploading…</span>
                           ) : dumpUploadState === "failed" ? (
