@@ -3,9 +3,12 @@ import { createClient } from "@/lib/supabase/server"
 import {
   createRequestId,
   errorResponse,
+  fetchWithTimeout,
+  getAllowedHosts,
   internalErrorResponse,
   isUuid,
   sameOriginWriteGuard,
+  validateOutgoingUrl,
 } from "@/lib/api/security"
 
 const ALLOWED_ACTIONS = new Set(["pause", "restart", "start"])
@@ -185,29 +188,77 @@ export async function DELETE(
       return errorResponse(401, "UNAUTHORIZED", "Unauthorized", requestId)
     }
 
-    const { data: existingTask } = await supabase
-      .from("tasks")
-      .select("id")
-      .eq("id", taskId)
-      .eq("user_id", user.id)
-      .single()
-
-    if (!existingTask) {
-      return errorResponse(404, "NOT_FOUND", "Task not found", requestId)
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
+    if (sessionError || !session?.access_token) {
+      return errorResponse(401, "UNAUTHORIZED", "No active session", requestId)
     }
 
-    const { error: deleteError } = await supabase
-      .from("tasks")
-      .delete()
-      .eq("id", taskId)
-      .eq("user_id", user.id)
+    const rawExternalApiDomain = process.env.EXTERNAL_API_DOMAIN ?? "http://localhost:8080"
+    const externalBaseUrl = new URL(rawExternalApiDomain)
+    const allowedHosts = getAllowedHosts(
+      process.env.EXTERNAL_API_ALLOWED_HOSTS,
+      externalBaseUrl.hostname
+    )
+    const safeExternalBaseUrl = await validateOutgoingUrl(
+      externalBaseUrl.toString(),
+      allowedHosts,
+      externalBaseUrl.protocol === "http:"
+    )
+    if (!safeExternalBaseUrl) {
+      return errorResponse(500, "SERVER_MISCONFIGURED", "External API host is not allowed", requestId)
+    }
 
-    if (deleteError) {
-      return errorResponse(500, "INTERNAL_ERROR", "Failed to delete task", requestId)
+    const externalDeleteUrl = new URL(`/delete/${taskId}`, safeExternalBaseUrl)
+    const upstream = await fetchWithTimeout(
+      externalDeleteUrl,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          accesstoken: `Bearer ${session.access_token}`,
+        }),
+      },
+      15000
+    )
+
+    const upstreamText = await upstream.text()
+    const upstreamData = (() => {
+      try {
+        return upstreamText ? JSON.parse(upstreamText) : null
+      } catch {
+        return null
+      }
+    })()
+
+    if (!upstream.ok) {
+      if (upstreamData && typeof upstreamData === "object") {
+        return NextResponse.json(
+          {
+            ...(upstreamData as Record<string, unknown>),
+            requestId,
+          },
+          { status: upstream.status }
+        )
+      }
+      return errorResponse(
+        upstream.status,
+        "UPSTREAM_ERROR",
+        "Failed to delete task on external server",
+        requestId
+      )
     }
 
     return NextResponse.json({
       success: true,
+      taskid:
+        upstreamData && typeof upstreamData === "object" && "taskid" in upstreamData
+          ? String((upstreamData as { taskid?: unknown }).taskid ?? taskId)
+          : taskId,
       message: "Task deleted successfully",
       requestId,
     })
